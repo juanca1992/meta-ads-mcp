@@ -12,6 +12,9 @@ wheels/
 .DS_Store
 
 # Development environment files
+.env
+.env.*
+!.env.example
 .python-version
 poetry.lock
 uv.lock
@@ -20,6 +23,8 @@ uv.lock
 
 # Generated content
 ad_creatives/
+ad_images/
+outputs/
 
 # Debug and development files
 debug/

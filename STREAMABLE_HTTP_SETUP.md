@@ -121,6 +121,23 @@ safe deployment and leaking your Meta account to the internet.
 
 Which credential you use depends on **who runs the server**.
 
+### Write confirmation safety gate
+
+Read-only tools need only the authentication header. Tools that create, upload,
+duplicate, or update Meta Ads resources are blocked by default with HTTP `428`
+until the caller repeats that specific request with a matching confirmation
+header:
+
+```text
+X-META-WRITE-CONFIRMATION: update_campaign
+```
+
+The header value must exactly match the requested tool name, so confirmation of
+one operation cannot authorize a different operation. Only send it after the
+operator has reviewed the account, object, status, budget, and other parameters.
+For backwards compatibility this gate can be disabled with
+`META_ADS_REQUIRE_WRITE_CONFIRMATION=false`, but doing so is not recommended.
+
 ### Self-hosted: Meta access token
 
 When you run this package yourself, supply a Meta access token from your own Meta
@@ -444,4 +461,4 @@ If you're currently using stdio transport with MCP clients, you can support both
 > set `META_ACCESS_TOKEN` from your own Meta app, or use the hosted MCP at
 > `https://meta-ads.mcp.pipeboard.co/`.
 
-Both transports access the same Meta Ads functionality and use the same underlying authentication system. 
+Both transports access the same Meta Ads functionality and use the same underlying authentication system.

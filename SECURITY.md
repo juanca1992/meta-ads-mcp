@@ -9,6 +9,30 @@ vulnerabilities.
 
 ## Advisories
 
+### Successful Graph API pagination leaked Meta credentials
+
+- **Severity:** Critical
+- **Affected versions:** `<= 1.0.120`
+- **Fixed in:** `1.0.121`
+
+**What went wrong.** Error responses already redacted credential query
+parameters, but successful Graph API responses were returned unchanged. Meta
+can include the complete `access_token` in `paging.next`, which exposed the
+credential to the MCP client and any transcript or logging system receiving the
+tool result. Debug logging also retained token prefixes and could log positional
+arguments containing credentials.
+
+**Fix.** Successful JSON and text responses are now sanitized recursively.
+Credential-named fields, pagination URL parameters, the active access token,
+and `appsecret_proof` are removed before the response reaches the MCP client.
+Credential values and prefixes are no longer logged. OAuth token cache files
+and directories are forced to owner-only permissions. Streamable HTTP write
+tools also require a per-tool `X-META-WRITE-CONFIRMATION` header by default.
+
+**Action for operators.** Upgrade to `1.0.121` or later and rotate any token
+used with an affected version, particularly if tool responses were sent to a
+remote MCP/LLM client or retained in logs or transcripts.
+
 ### GHSA-45gf-fjxp-cjpq — Server-Side Request Forgery (SSRF) in `upload_ad_image` via unrestricted `image_url` fetch
 
 - **Severity:** High (CVSS 3.1 8.3 — `AV:N/AC:L/PR:N/UI:N/S:C/C:L/I:L/A:L`)

@@ -139,7 +139,13 @@ class AuthManager:
         
         # Create directory if it doesn't exist
         cache_dir = base_path / "meta-ads-mcp"
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        # mkdir's mode is affected by umask and does not change existing paths.
+        # This directory stores a reusable Meta credential, so enforce it.
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            cache_dir.chmod(0o700)
+        except OSError as exc:
+            logger.warning("Could not restrict token cache directory permissions: %s", exc)
         
         return cache_dir / "token_cache.json"
     
@@ -211,8 +217,10 @@ class AuthManager:
         cache_path = self._get_token_cache_path()
         
         try:
-            with open(cache_path, "w") as f:
+            fd = os.open(cache_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
                 json.dump(self.token_info.serialize(), f)
+            cache_path.chmod(0o600)
             logger.info(f"Token cached at: {cache_path}")
         except Exception as e:
             logger.error(f"Error saving token to cache: {e}")
@@ -279,7 +287,7 @@ class AuthManager:
     def invalidate_token(self) -> None:
         """Invalidate the current token, usually because it has expired or is invalid"""
         if self.token_info:
-            logger.info(f"Invalidating token: {self.token_info.access_token[:10]}...")
+            logger.info("Invalidating cached Meta access token")
             self.token_info = None
             
             # Signal that authentication is needed
@@ -456,7 +464,7 @@ async def get_current_access_token() -> Optional[str]:
                 auth_manager.invalidate_token()
                 return None
                 
-            logger.debug(f"Access token found in auth_manager (starts with: {token[:10]}...)")
+            logger.debug("Access token found in auth_manager")
             return token
         else:
             logger.warning("No valid access token available in auth_manager")
@@ -540,4 +548,4 @@ def login():
 META_APP_ID = os.environ.get("META_APP_ID", "YOUR_META_APP_ID")
 
 # Create the auth manager
-auth_manager = AuthManager(META_APP_ID) 
+auth_manager = AuthManager(META_APP_ID)

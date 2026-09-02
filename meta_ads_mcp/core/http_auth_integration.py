@@ -10,10 +10,39 @@ import contextvars
 from typing import Optional
 from .utils import logger
 import json
+import os
 
 # Use context variables instead of thread-local storage for better async support
 _auth_token: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar('auth_token', default=None)
 _pipeboard_token: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar('pipeboard_token', default=None)
+
+_MUTATING_TOOLS = frozenset({
+    "create_campaign", "update_campaign",
+    "create_adset", "update_adset",
+    "create_ad", "update_ad",
+    "upload_ad_image", "create_ad_creative", "update_ad_creative",
+    "create_budget_schedule",
+    "duplicate_campaign", "duplicate_adset", "duplicate_ad", "duplicate_creative",
+})
+
+
+def _write_confirmation_required() -> bool:
+    value = os.environ.get("META_ADS_REQUIRE_WRITE_CONFIRMATION", "true")
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+async def _extract_tool_name(request: "Request") -> Optional[str]:
+    """Return the JSON-RPC tool name without logging or retaining arguments."""
+    if request.method.upper() != "POST":
+        return None
+    try:
+        payload = json.loads((await request.body()).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if payload.get("method") != "tools/call":
+        return None
+    params = payload.get("params")
+    return params.get("name") if isinstance(params, dict) else None
 
 class FastMCPAuthIntegration:
     """Direct integration with FastMCP for HTTP authentication"""
@@ -295,13 +324,35 @@ class AuthInjectionMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
+        tool_name = await _extract_tool_name(request)
+        if _write_confirmation_required() and tool_name in _MUTATING_TOOLS:
+            confirmation = request.headers.get("X-META-WRITE-CONFIRMATION", "")
+            if confirmation != tool_name:
+                logger.warning(
+                    "HTTP Auth Middleware: blocking unconfirmed write tool %s",
+                    tool_name,
+                )
+                return Response(
+                    content=json.dumps({
+                        "error": "Write confirmation required",
+                        "message": (
+                            "This tool changes Meta Ads data. After reviewing the exact "
+                            "action, repeat the request with X-META-WRITE-CONFIRMATION "
+                            f"set to {tool_name}."
+                        ),
+                        "tool": tool_name,
+                    }),
+                    status_code=428,
+                    media_type="application/json",
+                )
+
         if auth_token:
-            logger.debug(f"HTTP Auth Middleware: Extracted auth token: {auth_token[:10]}...")
+            logger.debug("HTTP Auth Middleware: Extracted authentication token")
             logger.debug("Injecting auth token into request context")
             FastMCPAuthIntegration.set_auth_token(auth_token)
 
         if pipeboard_token:
-            logger.debug(f"HTTP Auth Middleware: Extracted Pipeboard token: {pipeboard_token[:10]}...")
+            logger.debug("HTTP Auth Middleware: Extracted Pipeboard token")
             logger.debug("Injecting Pipeboard token into request context")
             FastMCPAuthIntegration.set_pipeboard_token(pipeboard_token)
 
@@ -341,4 +392,4 @@ def setup_starlette_middleware(app):
         except Exception as e:
             logger.error(f"Failed to add AuthInjectionMiddleware to Starlette app: {e}", exc_info=True)
     else:
-        logger.debug("AuthInjectionMiddleware already present in Starlette app's middleware stack.") 
+        logger.debug("AuthInjectionMiddleware already present in Starlette app's middleware stack.")

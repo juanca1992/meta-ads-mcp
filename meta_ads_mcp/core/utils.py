@@ -38,7 +38,7 @@ if not using_direct_token:
 
 # Configure logging to file
 def setup_logging():
-    """Set up logging to file for troubleshooting."""
+    """Set up owner-only file logging, with a safe stderr fallback."""
     # Get platform-specific path for logs
     if platform.system() == "Windows":
         base_path = pathlib.Path(os.environ.get("APPDATA", ""))
@@ -47,18 +47,25 @@ def setup_logging():
     else:  # Assume Linux/Unix
         base_path = pathlib.Path.home() / ".config"
     
-    # Create directory if it doesn't exist
     log_dir = base_path / "meta-ads-mcp"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
     log_file = log_dir / "meta_ads_debug.log"
-    
-    # Configure file logger
+
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        log_dir.chmod(0o700)
+        handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+        log_file.chmod(0o600)
+        logging_destination = str(log_file)
+    except OSError:
+        # Read-only homes and hardened containers should still be able to run.
+        # stderr is safe for HTTP and does not corrupt stdio's stdout channel.
+        handler = logging.StreamHandler(sys.stderr)
+        logging_destination = "stderr (log directory unavailable)"
+
     logging.basicConfig(
         level=logging.DEBUG,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        filename=str(log_file),
-        filemode='a'  # Append mode
+        handlers=[handler],
     )
     
     # Create a logger
@@ -66,7 +73,7 @@ def setup_logging():
     logger.setLevel(logging.DEBUG)
     
     # Log startup information
-    logger.info(f"Logging initialized. Log file: {log_file}")
+    logger.info("Logging initialized. Destination: %s", logging_destination)
     logger.info(f"Platform: {platform.system()} {platform.release()}")
     logger.info(f"Using META_ACCESS_TOKEN from environment: {using_direct_token}")
     
@@ -393,4 +400,4 @@ def create_resource_from_image(image_bytes: bytes, resource_id: str, name: str) 
         "resource_uri": f"meta-ads://images/{resource_id}",
         "name": name,
         "size": len(image_bytes)
-    } 
+    }

@@ -42,6 +42,35 @@ def _redact_url(url: str) -> str:
         # Be conservative: if parsing fails, drop the query string entirely.
         return url.split("?", 1)[0]
 
+
+def _sanitize_response_payload(value: Any, *secrets: str) -> Any:
+    """Recursively remove credentials from Graph API responses.
+
+    Meta includes ``access_token`` in some pagination URLs. Returning that raw
+    JSON leaks the caller credential to the MCP client even on a successful
+    request, so sanitize credential fields, URLs, and exact echoed secrets.
+    """
+    active_secrets = tuple(secret for secret in secrets if secret)
+
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            if str(key).lower() in _SENSITIVE_QUERY_PARAMS:
+                sanitized[key] = "REDACTED"
+            else:
+                sanitized[key] = _sanitize_response_payload(item, *active_secrets)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_response_payload(item, *active_secrets) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_response_payload(item, *active_secrets) for item in value)
+    if isinstance(value, str):
+        sanitized = _redact_url(value) if "?" in value else value
+        for secret in active_secrets:
+            sanitized = sanitized.replace(secret, "REDACTED")
+        return sanitized
+    return value
+
 class McpToolError(Exception):
     """Base class for MCP tool errors that must set isError: true.
 
@@ -277,11 +306,20 @@ async def make_api_request(
 
             # Ensure the response is JSON and return it as a dictionary
             try:
-                return response.json()
+                payload = response.json()
+                return _sanitize_response_payload(
+                    payload,
+                    access_token,
+                    request_params.get("appsecret_proof", ""),
+                )
             except json.JSONDecodeError:
                 # If not JSON, return text content in a structured format
                 return {
-                    "text_response": response.text,
+                    "text_response": _sanitize_response_payload(
+                        response.text,
+                        access_token,
+                        request_params.get("appsecret_proof", ""),
+                    ),
                     "status_code": response.status_code
                 }
         
@@ -381,11 +419,14 @@ def meta_api_tool(func):
     async def wrapper(*args, **kwargs):
         try:
             # Log function call
-            logger.debug(f"Function call: {func.__name__}")
-            logger.debug(f"Args: {args}")
-            # Log kwargs without sensitive info
-            safe_kwargs = {k: ('***TOKEN***' if k == 'access_token' else v) for k, v in kwargs.items()}
-            logger.debug(f"Kwargs: {safe_kwargs}")
+            logger.debug("Function call: %s", func.__name__)
+            # Positional arguments can include an access token and keyword
+            # values can contain advertiser data. Log names/counts, not values.
+            logger.debug(
+                "Call shape: positional_count=%d keyword_names=%s",
+                len(args),
+                sorted(kwargs.keys()),
+            )
             
             # Log app ID information
             app_id = auth_manager.app_id
@@ -508,4 +549,4 @@ def meta_api_tool(func):
             logger.error(f"Error in {func.__name__}: {str(e)}")
             return json.dumps({"error": str(e)}, indent=2)
 
-    return wrapper 
+    return wrapper

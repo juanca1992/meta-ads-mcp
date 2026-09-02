@@ -19,7 +19,11 @@ from starlette.routing import Route
 from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
-from meta_ads_mcp.core.api import _redact_url, make_api_request
+from meta_ads_mcp.core.api import (
+    _redact_url,
+    _sanitize_response_payload,
+    make_api_request,
+)
 from meta_ads_mcp.core.http_auth_integration import (
     AuthInjectionMiddleware,
     setup_fastmcp_http_auth,
@@ -61,6 +65,52 @@ def test_middleware_accepts_bearer_token():
     )
     assert resp.status_code == 200
     assert resp.json() == {"reached_handler": True}
+
+
+def test_middleware_blocks_unconfirmed_write_tool():
+    client = TestClient(_build_app())
+    resp = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "method": "tools/call", "id": 1,
+              "params": {"name": "update_campaign", "arguments": {
+                  "campaign_id": "123", "status": "ACTIVE"
+              }}},
+        headers={"Authorization": "Bearer some-meta-token-value-xyz"},
+    )
+    assert resp.status_code == 428
+    assert resp.json()["error"] == "Write confirmation required"
+    assert "reached_handler" not in resp.text
+
+
+def test_middleware_accepts_matching_write_confirmation():
+    client = TestClient(_build_app())
+    resp = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "method": "tools/call", "id": 1,
+              "params": {"name": "update_campaign", "arguments": {
+                  "campaign_id": "123", "status": "ACTIVE"
+              }}},
+        headers={
+            "Authorization": "Bearer some-meta-token-value-xyz",
+            "X-META-WRITE-CONFIRMATION": "update_campaign",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"reached_handler": True}
+
+
+def test_write_confirmation_for_one_tool_cannot_confirm_another():
+    client = TestClient(_build_app())
+    resp = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "method": "tools/call", "id": 1,
+              "params": {"name": "update_ad", "arguments": {"ad_id": "456"}}},
+        headers={
+            "Authorization": "Bearer some-meta-token-value-xyz",
+            "X-META-WRITE-CONFIRMATION": "update_campaign",
+        },
+    )
+    assert resp.status_code == 428
 
 
 def test_middleware_accepts_pipeboard_token():
@@ -209,6 +259,55 @@ def test_redact_url_no_query_string():
 
 def test_redact_url_empty():
     assert _redact_url("") == ""
+
+
+def test_sanitize_success_payload_redacts_paging_credentials_recursively():
+    secret = "FAKE_ACCESS_TOKEN_VALUE_FOR_TEST_123"
+    proof = "FAKE_APPSECRET_PROOF"
+    payload = {
+        "data": [{"id": "act_123"}],
+        "paging": {
+            "next": (
+                "https://graph.facebook.com/v24.0/me/adaccounts?limit=1"
+                f"&access_token={secret}&appsecret_proof={proof}&after=cursor"
+            )
+        },
+        "nested": {"access_token": secret, "items": [f"echo:{secret}"]},
+    }
+
+    sanitized = _sanitize_response_payload(payload, secret, proof)
+    serialized = json.dumps(sanitized)
+
+    assert secret not in serialized
+    assert proof not in serialized
+    assert "access_token=REDACTED" in sanitized["paging"]["next"]
+    assert "appsecret_proof=REDACTED" in sanitized["paging"]["next"]
+    assert sanitized["nested"]["access_token"] == "REDACTED"
+
+
+@pytest.mark.asyncio
+async def test_make_api_request_success_response_does_not_leak_paging_token():
+    secret = "FAKE_ACCESS_TOKEN_VALUE_FOR_TEST_123"
+
+    async def fake_get(self, url, params=None, headers=None, timeout=None):
+        request = httpx.Request("GET", url, params=params, headers=headers)
+        body = {
+            "data": [{"id": "act_123"}],
+            "paging": {
+                "next": (
+                    "https://graph.facebook.com/v24.0/me/adaccounts?limit=1"
+                    f"&access_token={secret}&after=cursor"
+                )
+            },
+        }
+        return httpx.Response(200, request=request, json=body)
+
+    with patch("httpx.AsyncClient.get", new=fake_get):
+        result = await make_api_request("me/adaccounts", secret, {"limit": 1})
+
+    serialized = json.dumps(result)
+    assert secret not in serialized
+    assert "access_token=REDACTED" in result["paging"]["next"]
 
 
 @pytest.mark.asyncio
