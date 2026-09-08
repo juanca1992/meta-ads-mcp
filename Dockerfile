@@ -18,8 +18,10 @@ COPY requirements.txt .
 # Install dependencies using uv with --system flag
 RUN uv pip install --system -r requirements.txt
 
-# Copy the rest of the application
-COPY . .
+# Only application source belongs in the runtime image.
+COPY meta_ads_mcp ./meta_ads_mcp
+RUN useradd --create-home --uid 10001 app
+USER app
 
 # Command to run the Meta Ads MCP server
-CMD ["python", "-m", "meta_ads_mcp"] 
+CMD ["python", "-m", "meta_ads_mcp"]

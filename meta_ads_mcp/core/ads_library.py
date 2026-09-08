@@ -1,5 +1,7 @@
 """Adds Library-related functionality for Meta Ads API."""
 
+from .security import diagnostic_print as print
+
 import json
 import os
 from typing import Optional, List, Dict, Any

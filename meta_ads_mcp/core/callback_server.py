@@ -1,5 +1,7 @@
 """Callback server for Meta Ads API authentication."""
 
+from .security import diagnostic_print as print
+
 import threading
 import socket
 import asyncio
@@ -7,6 +9,8 @@ import json
 import logging
 import webbrowser
 import os
+import secrets
+import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 from typing import Dict, Any, Optional
@@ -28,118 +32,65 @@ server_shutdown_timer = None
 CALLBACK_SERVER_TIMEOUT = 180  # 3 minutes timeout
 
 
+_oauth_pending = None
+_oauth_lock = threading.Lock()
+
+
+def begin_oauth_flow(redirect_uri):
+    global _oauth_pending
+    state = secrets.token_urlsafe(32)
+    with _oauth_lock:
+        _oauth_pending = (state, redirect_uri, time.monotonic() + CALLBACK_SERVER_TIMEOUT)
+        token_container.clear()
+        token_container.update(token=None, expires_in=None, user_id=None)
+    return state
+
+
+def consume_oauth_state(state):
+    global _oauth_pending
+    with _oauth_lock:
+        pending = _oauth_pending
+        if not pending or not state or pending[2] <= time.monotonic():
+            return None
+        if not secrets.compare_digest(state, pending[0]):
+            return None
+        _oauth_pending = None
+        return pending[1]
+
+
 class CallbackHandler(BaseHTTPRequestHandler):
+    def _reply(self, status, message):
+        self.send_response(status)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(message.encode())
+
     def do_GET(self):
+        if urlparse(self.path).path != "/callback":
+            return self._reply(404, "Not found")
         try:
-            # Print path for debugging
-            print(f"Callback server received request: {self.path}")
-            
-            if self.path.startswith("/callback"):
-                self._handle_oauth_callback()
-            elif self.path.startswith("/token"):
-                self._handle_token()
-            else:
-                # If no matching path, return a 404 error
-                self.send_response(404)
-                self.end_headers()
-        except Exception as e:
-            print(f"Error processing request: {e}")
-            self.send_response(500)
-            self.end_headers()
-    
+            self._handle_oauth_callback()
+        except Exception:
+            logger.error("OAuth callback failed")
+            self._reply(500, "Authentication failed; start a new login")
+
     def _handle_oauth_callback(self):
-        """Handle OAuth callback after user authorization"""
-        # Check if we're being redirected from Facebook with an authorization code
-        parsed_url = urlparse(self.path)
-        params = parse_qs(parsed_url.query)
-        
-        # Check for code parameter
-        code = params.get('code', [None])[0]
-        state = params.get('state', [None])[0]
-        error = params.get('error', [None])[0]
-        
-        # Send 200 OK response with a simple HTML page
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-        
-        if error:
-            # User denied access or other error occurred
-            html = f"""
-            <html>
-            <head><title>Authorization Failed</title></head>
-            <body>
-                <h1>Authorization Failed</h1>
-                <p>Error: {error}</p>
-                <p>The authorization was cancelled or failed. You can close this window.</p>
-            </body>
-            </html>
-            """
-            logger.error(f"OAuth authorization failed: {error}")
-        elif code:
-            # Success case - we have the authorization code
-            logger.info(f"Received authorization code: {code[:10]}...")
-            
-            # Store the authorization code temporarily
-            # The auth module will exchange this for an access token
-            token_container.update({
-                "auth_code": code,
-                "state": state,
-                "timestamp": asyncio.get_event_loop().time()
-            })
-            
-            html = """
-            <html>
-            <head><title>Authorization Successful</title></head>
-            <body>
-                <h1>✅ Authorization Successful!</h1>
-                <p>You have successfully authorized the Meta Ads MCP application.</p>
-                <p>You can now close this window and return to your application.</p>
-                <script>
-                    // Try to close the window automatically after 2 seconds
-                    setTimeout(function() {
-                        window.close();
-                    }, 2000);
-                </script>
-            </body>
-            </html>
-            """
-            logger.info("OAuth authorization successful")
-        else:
-            # No code or error - something unexpected happened
-            html = """
-            <html>
-            <head><title>Unexpected Response</title></head>
-            <body>
-                <h1>Unexpected Response</h1>
-                <p>No authorization code or error received. Please try again.</p>
-            </body>
-            </html>
-            """
-            logger.warning("OAuth callback received without code or error")
-        
-        self.wfile.write(html.encode())
-    
-    def _handle_token(self):
-        """Handle token endpoint for retrieving stored token data"""
-        # This endpoint allows other parts of the application to retrieve
-        # token information from the callback server
-        
-        self.send_response(200)
-        self.send_header("Content-type", "application/json")
-        self.end_headers()
-        
-        # Return current token container contents
-        response_data = {
-            "status": "success",
-            "data": token_container
-        }
-        
-        self.wfile.write(json.dumps(response_data).encode())
-        
-        # The actual token processing is now handled by the auth module
-        # that imports this module and accesses token_container
-    
+        params = parse_qs(urlparse(self.path).query)
+        redirect_uri = consume_oauth_state(params.get("state", [None])[0])
+        if not redirect_uri:
+            return self._reply(400, "Invalid or expired login state")
+        if params.get("error") or not params.get("code"):
+            return self._reply(400, "Authorization cancelled or invalid response")
+        from .auth import exchange_authorization_code, process_token_response
+        result = exchange_authorization_code(params["code"][0], redirect_uri)
+        if not result or not process_token_response(result):
+            return self._reply(502, "Token exchange failed; start a new login")
+        token_container.update(result)
+        self._reply(200, "Authentication successful. You can close this window.")
+
     # Silence server logs
     def log_message(self, format, *args):
         return

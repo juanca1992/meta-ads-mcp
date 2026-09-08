@@ -10,8 +10,11 @@ and fetchable records for ChatGPT Deep Research analysis.
 
 import json
 import re
+import hashlib
+import time
+from collections import OrderedDict
 from typing import List, Dict, Any, Optional
-from .api import meta_api_tool, make_api_request, ensure_act_prefix
+from .api import meta_api_tool, make_api_request, make_paginated_request, ensure_act_prefix
 from .server import mcp_server
 from .utils import logger
 
@@ -20,9 +23,25 @@ class MetaAdsDataManager:
     """Manages Meta Ads data for OpenAI MCP search and fetch operations"""
     
     def __init__(self):
-        self._cache = {}
+        self._cache = OrderedDict()
+        self.cache_ttl = 300
+        self.cache_limit = 2000
         logger.debug("MetaAdsDataManager initialized")
     
+    def _key(self, token, record_id):
+        return (hashlib.sha256(token.encode()).digest(), record_id)
+
+    def _store(self, token, record_id, record):
+        now = time.monotonic()
+        for key, (expiry, _) in list(self._cache.items()):
+            if expiry <= now:
+                del self._cache[key]
+        key = self._key(token, record_id)
+        self._cache[key] = (now + self.cache_ttl, record)
+        self._cache.move_to_end(key)
+        while len(self._cache) > self.cache_limit:
+            self._cache.popitem(last=False)
+
     async def _get_ad_accounts(self, access_token: str, limit: int = 200) -> List[Dict[str, Any]]:
         """Get ad accounts data"""
         try:
@@ -32,14 +51,16 @@ class MetaAdsDataManager:
                 "limit": limit
             }
             
-            data = await make_api_request(endpoint, access_token, params)
+            data = await make_paginated_request(endpoint, access_token, params, request=make_api_request)
             
+            if "error" in data:
+                raise ValueError("Search data request failed or pagination was incomplete")
             if "data" in data:
                 return data["data"]
             return []
         except Exception as e:
             logger.error(f"Error fetching ad accounts: {e}")
-            return []
+            raise
     
     async def _get_campaigns(self, access_token: str, account_id: str, limit: int = 25) -> List[Dict[str, Any]]:
         """Get campaigns data for an account"""
@@ -50,14 +71,16 @@ class MetaAdsDataManager:
                 "limit": limit
             }
             
-            data = await make_api_request(endpoint, access_token, params)
+            data = await make_paginated_request(endpoint, access_token, params, request=make_api_request)
             
+            if "error" in data:
+                raise ValueError("Search data request failed or pagination was incomplete")
             if "data" in data:
                 return data["data"]
             return []
         except Exception as e:
             logger.error(f"Error fetching campaigns for {account_id}: {e}")
-            return []
+            raise
     
     async def _get_ads(self, access_token: str, account_id: str, limit: int = 25) -> List[Dict[str, Any]]:
         """Get ads data for an account"""
@@ -68,14 +91,16 @@ class MetaAdsDataManager:
                 "limit": limit
             }
             
-            data = await make_api_request(endpoint, access_token, params)
+            data = await make_paginated_request(endpoint, access_token, params, request=make_api_request)
             
+            if "error" in data:
+                raise ValueError("Search data request failed or pagination was incomplete")
             if "data" in data:
                 return data["data"]
             return []
         except Exception as e:
             logger.error(f"Error fetching ads for {account_id}: {e}")
-            return []
+            raise
     
     async def _get_pages_for_account(self, access_token: str, account_id: str) -> List[Dict[str, Any]]:
         """Get pages associated with an account"""
@@ -110,14 +135,16 @@ class MetaAdsDataManager:
                 "limit": limit
             }
             
-            data = await make_api_request(endpoint, access_token, params)
+            data = await make_paginated_request(endpoint, access_token, params, request=make_api_request)
             
+            if "error" in data:
+                raise ValueError("Search data request failed or pagination was incomplete")
             if "data" in data:
                 return data["data"]
             return []
         except Exception as e:
             logger.error(f"Error fetching businesses: {e}")
-            return []
+            raise
     
     async def search_records(self, query: str, access_token: str) -> List[str]:
         """Search Meta Ads data and return matching record IDs
@@ -148,7 +175,7 @@ class MetaAdsDataManager:
                     matching_ids.append(record_id)
                     
                     # Cache the account data
-                    self._cache[record_id] = {
+                    self._store(access_token, record_id, {
                         "id": record_id,
                         "type": "account",
                         "title": f"Ad Account: {account.get('name', 'Unnamed Account')}",
@@ -162,7 +189,7 @@ class MetaAdsDataManager:
                             "data_type": "meta_ads_account"
                         },
                         "raw_data": account
-                    }
+                    })
                     
                     # Also search campaigns for this account if it matches
                     campaigns = await self._get_campaigns(access_token, account['id'], limit=10)
@@ -174,7 +201,7 @@ class MetaAdsDataManager:
                             matching_ids.append(campaign_record_id)
                             
                             # Cache the campaign data
-                            self._cache[campaign_record_id] = {
+                            self._store(access_token, campaign_record_id, {
                                 "id": campaign_record_id,
                                 "type": "campaign",
                                 "title": f"Campaign: {campaign.get('name', 'Unnamed Campaign')}",
@@ -189,7 +216,7 @@ class MetaAdsDataManager:
                                     "data_type": "meta_ads_campaign"
                                 },
                                 "raw_data": campaign
-                            }
+                            })
             
             # If query specifically mentions "ads" or "ad", also search individual ads
             if any(term in ['ad', 'ads', 'advertisement', 'creative'] for term in query_terms):
@@ -203,7 +230,7 @@ class MetaAdsDataManager:
                             matching_ids.append(ad_record_id)
                             
                             # Cache the ad data
-                            self._cache[ad_record_id] = {
+                            self._store(access_token, ad_record_id, {
                                 "id": ad_record_id,
                                 "type": "ad",
                                 "title": f"Ad: {ad.get('name', 'Unnamed Ad')}",
@@ -217,7 +244,7 @@ class MetaAdsDataManager:
                                     "data_type": "meta_ads_ad"
                                 },
                                 "raw_data": ad
-                            }
+                            })
             
             # If query specifically mentions "page" or "pages", also search pages
             if any(term in ['page', 'pages', 'facebook page'] for term in query_terms):
@@ -231,7 +258,7 @@ class MetaAdsDataManager:
                             matching_ids.append(page_record_id)
                             
                             # Cache the page data
-                            self._cache[page_record_id] = {
+                            self._store(access_token, page_record_id, {
                                 "id": page_record_id,
                                 "type": "page",
                                 "title": f"Facebook Page: {page.get('name', 'Unnamed Page')}",
@@ -245,7 +272,7 @@ class MetaAdsDataManager:
                                     "data_type": "meta_ads_page"
                                 },
                                 "raw_data": page
-                            }
+                            })
             
             # If query specifically mentions "business" or "businesses", also search businesses
             if any(term in ['business', 'businesses', 'company', 'companies'] for term in query_terms):
@@ -258,7 +285,7 @@ class MetaAdsDataManager:
                         matching_ids.append(business_record_id)
                         
                         # Cache the business data
-                        self._cache[business_record_id] = {
+                        self._store(access_token, business_record_id, {
                             "id": business_record_id,
                             "type": "business",
                             "title": f"Business: {business.get('name', 'Unnamed Business')}",
@@ -271,17 +298,17 @@ class MetaAdsDataManager:
                                 "data_type": "meta_ads_business"
                             },
                             "raw_data": business
-                        }
+                        })
         
         except Exception as e:
             logger.error(f"Error during search operation: {e}")
-            # Return empty list on error, but don't raise exception
-            return []
+            # Do not present a partial search as a complete empty result.
+            raise
         
         logger.info(f"Search completed. Found {len(matching_ids)} matching records")
         return matching_ids[:50]  # Limit to 50 results for performance
     
-    def fetch_record(self, record_id: str) -> Optional[Dict[str, Any]]:
+    def fetch_record(self, record_id: str, access_token: str) -> Optional[Dict[str, Any]]:
         """Fetch a cached record by ID
         
         Args:
@@ -292,7 +319,8 @@ class MetaAdsDataManager:
         """
         logger.info(f"Fetching record: {record_id}")
         
-        record = self._cache.get(record_id)
+        entry = self._cache.get(self._key(access_token, record_id))
+        record = entry[1] if entry and entry[0] > time.monotonic() else None
         if record:
             logger.debug(f"Record found in cache: {record['type']}")
             return record
@@ -362,8 +390,10 @@ async def search(
 
 
 @mcp_server.tool()
+@meta_api_tool
 async def fetch(
-    id: str
+    id: str,
+    access_token: Optional[str] = None
 ) -> str:
     """
     Fetch a record previously returned by the 'search' tool in the same session.
@@ -395,7 +425,13 @@ async def fetch(
     
     try:
         # Use the data manager to fetch the record
-        record = _data_manager.fetch_record(id)
+        record = _data_manager.fetch_record(id, access_token)
+        if record:
+            # Revalidate object access to handle revoked tokens/permissions.
+            object_id = id.split(":", 1)[-1]
+            permission = await make_api_request(object_id, access_token, {"fields": "id"})
+            if "error" in permission or not permission.get("id"):
+                return json.dumps({"error": "Record not found or access denied"})
         
         if record:
             logger.info(f"Record fetched successfully: {id}")

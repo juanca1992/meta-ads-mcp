@@ -13,6 +13,8 @@ import json
 import os
 
 # Use context variables instead of thread-local storage for better async support
+_http_request = contextvars.ContextVar("http_request", default=False)
+
 _auth_token: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar('auth_token', default=None)
 _pipeboard_token: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar('pipeboard_token', default=None)
 
@@ -20,7 +22,7 @@ _MUTATING_TOOLS = frozenset({
     "create_campaign", "update_campaign",
     "create_adset", "update_adset",
     "create_ad", "update_ad",
-    "upload_ad_image", "create_ad_creative", "update_ad_creative",
+    "upload_ad_image", "upload_ad_video", "create_ad_creative", "update_ad_creative",
     "create_budget_schedule",
     "duplicate_campaign", "duplicate_adset", "duplicate_ad", "duplicate_creative",
 })
@@ -37,12 +39,16 @@ async def _extract_tool_name(request: "Request") -> Optional[str]:
         return None
     try:
         payload = json.loads((await request.body()).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("JSON-RPC body must be an object")
     if payload.get("method") != "tools/call":
         return None
     params = payload.get("params")
-    return params.get("name") if isinstance(params, dict) else None
+    if not isinstance(params, dict) or not isinstance(params.get("name"), str):
+        raise ValueError("tools/call requires params.name")
+    return params["name"]
 
 class FastMCPAuthIntegration:
     """Direct integration with FastMCP for HTTP authentication"""
@@ -216,6 +222,8 @@ def setup_fastmcp_http_auth(mcp_server):
     Args:
         mcp_server: FastMCP server instance to configure
     """
+    if not callable(getattr(mcp_server, "streamable_http_app", None)):
+        raise RuntimeError("Cannot protect served HTTP application")
     logger.info("Setting up FastMCP HTTP authentication integration")
     
     # 1. Patch FastMCP's run method to ensure our get_current_access_token patch is applied
@@ -241,7 +249,7 @@ def setup_fastmcp_http_auth(mcp_server):
     if hasattr(mcp_server, "streamable_http_app") and callable(mcp_server.streamable_http_app):
         app_provider_methods.append("streamable_http_app")
     else:
-        logger.error("mcp_server.streamable_http_app not found or not callable — the served streamable-http app cannot be protected with AuthInjectionMiddleware.")
+        raise RuntimeError("Cannot protect served HTTP application")
     if hasattr(mcp_server, "sse_app") and callable(mcp_server.sse_app):
         app_provider_methods.append("sse_app")
 
@@ -264,7 +272,7 @@ def setup_fastmcp_http_auth(mcp_server):
                 # Now, add our middleware to this specific app instance
                 setup_starlette_middleware(app)
             else:
-                logger.error(f"Original {_method_name} returned None or a non-app object.")
+                raise RuntimeError("HTTP application provider returned no application")
             return app
 
         setattr(mcp_server, method_name, new_patched_app_provider_method)
@@ -289,6 +297,53 @@ from starlette.responses import Response
 import json # Ensure json is imported if not already at the top
 
 class AuthInjectionMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app):
+        super().__init__(app)
+        self.max_body = min(140 * 1024 * 1024, max(1024, int(os.environ.get("META_ADS_MAX_BODY_BYTES", 16 * 1024 * 1024))))
+        self._slots = asyncio.Semaphore(2)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        if scope.get("method") != "POST":
+            return await super().__call__(scope, receive, send)
+        headers = dict(scope.get("headers", []))
+        try:
+            length = int(headers.get(b"content-length", b"0"))
+        except ValueError:
+            return await Response(status_code=400)(scope, receive, send)
+        if length < 0 or length > self.max_body:
+            return await Response(status_code=413)(scope, receive, send)
+        # Bound concurrent body accumulation as well as per-request size.
+        if self._slots.locked():
+            return await Response(status_code=429)(scope, receive, send)
+        async with self._slots:
+            messages, total = [], 0
+            while True:
+                try:
+                    message = await asyncio.wait_for(receive(), timeout=30)
+                except asyncio.TimeoutError:
+                    return await Response(status_code=408)(scope, receive, send)
+                if message["type"] == "http.disconnect":
+                    return
+                total += len(message.get("body", b""))
+                if total > self.max_body:
+                    return await Response(status_code=413)(scope, receive, send)
+                messages.append(message)
+                if not message.get("more_body", False):
+                    break
+            index = 0
+
+            async def replay():
+                nonlocal index
+                if index < len(messages):
+                    message = messages[index]
+                    index += 1
+                    return message
+                return await receive()
+
+            return await super().__call__(scope, replay, send)
+
     async def dispatch(self, request: Request, call_next):
         logger.debug(f"HTTP Auth Middleware: Processing request to {request.url.path}")
         logger.debug(f"HTTP Auth Middleware: Request headers: {list(request.headers.keys())}")
@@ -324,7 +379,10 @@ class AuthInjectionMiddleware(BaseHTTPMiddleware):
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-        tool_name = await _extract_tool_name(request)
+        try:
+            tool_name = await _extract_tool_name(request)
+        except ValueError:
+            return Response(content='{"error":"Invalid JSON-RPC request"}', status_code=400, media_type="application/json")
         if _write_confirmation_required() and tool_name in _MUTATING_TOOLS:
             confirmation = request.headers.get("X-META-WRITE-CONFIRMATION", "")
             if confirmation != tool_name:
@@ -356,10 +414,12 @@ class AuthInjectionMiddleware(BaseHTTPMiddleware):
             logger.debug("Injecting Pipeboard token into request context")
             FastMCPAuthIntegration.set_pipeboard_token(pipeboard_token)
 
+        context_marker = _http_request.set(True)
         try:
             response = await call_next(request)
             return response
         finally:
+            _http_request.reset(context_marker)
             # Clear tokens that were set for this request
             if auth_token:
                 FastMCPAuthIntegration.clear_auth_token()
@@ -373,8 +433,7 @@ def setup_starlette_middleware(app):
         app: Starlette app instance
     """
     if not app:
-        logger.error("Cannot setup Starlette middleware, app is None.")
-        return
+        raise RuntimeError("Cannot protect an absent HTTP application")
 
     # Check if our specific middleware class is already in the stack
     already_added = False
@@ -390,6 +449,7 @@ def setup_starlette_middleware(app):
             app.add_middleware(AuthInjectionMiddleware)
             logger.info("AuthInjectionMiddleware added to Starlette app successfully.")
         except Exception as e:
-            logger.error(f"Failed to add AuthInjectionMiddleware to Starlette app: {e}", exc_info=True)
+            logger.error("Failed to add HTTP authentication middleware")
+            raise RuntimeError("Refusing to serve HTTP without authentication") from e
     else:
         logger.debug("AuthInjectionMiddleware already present in Starlette app's middleware stack.")

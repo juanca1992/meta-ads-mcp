@@ -1,5 +1,7 @@
 """Ad and Creative-related functionality for Meta Ads API."""
 
+from .security import diagnostic_print as print
+
 import asyncio
 import json
 import logging
@@ -9,6 +11,10 @@ from PIL import Image as PILImage
 from mcp.server.fastmcp import Image
 import os
 import time
+import base64
+import binascii
+from pathlib import Path
+from contextlib import ExitStack
 
 logger = logging.getLogger(__name__)
 
@@ -957,7 +963,7 @@ async def get_ad_video(ad_id: str = "", video_id: str = "", account_id: str = ""
     (direct download link), thumbnail URL, processing status, and metadata (title, description,
     duration).
 
-    Also useful for polling after bulk_upload_ad_videos: ``video_status`` is
+    Also useful for polling after upload_ad_video: ``video_status`` is
     ``"processing"`` while Meta is still transcoding and ``"ready"`` when the
     real video frames (and a usable thumbnail) are available. Calling
     create_ad_creative before status is "ready" returns an error because the
@@ -1311,6 +1317,87 @@ async def update_ad(
         return json.dumps(data, indent=2)
     except Exception as e:
         return json.dumps({"error": f"Failed to update ad: {str(e)}"}, indent=2)
+
+
+@mcp_server.tool()
+@meta_api_tool
+async def upload_ad_video(
+    account_id: str,
+    file_path: Optional[str] = None,
+    file: Optional[str] = None,
+    name: Optional[str] = None,
+    access_token: Optional[str] = None,
+) -> str:
+    """Upload one MP4/MOV/WebM video to an ad account's media assets.
+
+    Supply exactly one of file_path (absolute path on the MCP server) or file
+    (base64 or a base64 data URL). Local paths are available only via stdio on POSIX and must be inside a directory in
+    META_ADS_VIDEO_UPLOAD_ROOTS, separated by os.pathsep; disabled when unset.
+    A remote server cannot read files on the client's computer. Maximum 100 MiB.
+    name is the optional title; local uploads default to the original filename.
+
+    Returns video_id after Meta accepts the upload, NOT processing completion.
+    Poll get_ad_video(video_id=..., account_id=...) until video_status is ready
+    before create_ad_creative. Does not create ads or business portfolio folders.
+    For multiple videos, call once per file and keep each returned ID. Uploads
+    are not retried: after an ambiguous failure inspect the account before retrying.
+    """
+    account_id = ensure_act_prefix(account_id)
+    if not account_id or not account_id.removeprefix("act_").isascii() or not account_id.removeprefix("act_").isdigit():
+        return json.dumps({"error": "Provide a numeric ad account ID, optionally prefixed with act_"})
+    if bool(file_path) == bool(file):
+        return json.dumps({"error": "Provide exactly one of file_path or file"})
+    max_bytes = 100 * 1024 * 1024
+    try:
+        with ExitStack() as stack:
+            if file_path:
+                from .http_auth_integration import _http_request
+                from .security import open_upload_file
+                if _http_request.get():
+                    raise ValueError("Local file uploads are disabled over HTTP; send file as base64")
+                path = Path(file_path)
+                stream = stack.enter_context(open_upload_file(file_path))
+                size = os.fstat(stream.fileno()).st_size
+                title = name or path.name
+            else:
+                payload = file
+                if payload.startswith("data:"):
+                    header, sep, payload = payload.partition(",")
+                    if not sep or not header.startswith("data:video/") or not header.endswith(";base64"):
+                        raise ValueError("Expected a base64 video data URL")
+                if len(payload) > 4 * ((max_bytes + 2) // 3):
+                    raise ValueError("Video exceeds the 100 MiB upload limit")
+                raw = base64.b64decode(payload, validate=True)
+                stream = stack.enter_context(io.BytesIO(raw))
+                size = len(raw)
+                title = name or "video"
+            if not 0 < size <= max_bytes:
+                raise ValueError("Video must be nonempty and at most 100 MiB")
+            signature = stream.read(16)
+            stream.seek(0)
+            if signature[4:8] == b"ftyp":
+                mime, extension = "video/mp4", ".mp4"
+            elif signature[:4] == b"\x1a\x45\xdf\xa3":
+                mime, extension = "video/webm", ".webm"
+            else:
+                raise ValueError("Expected an MP4/MOV (ftyp) or WebM video container")
+            data = await make_api_request(
+                f"{account_id}/advideos", access_token, {"title": title}, method="POST",
+                files={"source": ("upload" + extension, stream, mime)}, timeout=300.0,
+            )
+        if "error" in data or not data.get("id"):
+            return json.dumps({"error": "Video upload was not confirmed", "details": data,
+                               "account_id": account_id,
+                               "next_step": "Inspect account videos before retrying to avoid duplicates"})
+        return json.dumps({"success": True, "account_id": account_id, "video_id": str(data["id"]),
+                           "name": title, "bytes": size, "processing_status": "not_checked",
+                           "next_step": "Call get_ad_video with video_id and account_id until video_status is ready"})
+    except (ValueError, binascii.Error) as exc:
+        return json.dumps({"error": str(exc)})
+    except OSError:
+        return json.dumps({"error": "Cannot read local video file"})
+    except Exception:
+        return json.dumps({"error": "Video upload was not confirmed; inspect account videos before retrying"})
 
 
 @mcp_server.tool()
@@ -1811,7 +1898,7 @@ async def create_ad_creative(
                       Meta will auto-generate a thumbnail if not provided — Pipeboard
                       will fetch the best available frame from the uploaded video.
                       IMPORTANT: when the video was just uploaded via
-                      bulk_upload_ad_videos, Meta needs a few seconds to transcode
+                      upload_ad_video, Meta needs a few seconds to transcode
                       it. If create_ad_creative is called before transcoding
                       completes, the only thumbnail Meta returns is a generic
                       processing-state placeholder, which would be permanently
@@ -3526,7 +3613,6 @@ async def get_account_pages(account_id: str, access_token: Optional[str] = None)
             "error": "Failed to get account pages",
             "details": str(e)
         }, indent=2)
-
 
 
 

@@ -31,6 +31,9 @@ jobs:
     - name: Test package build
       run: python -m build
 
+    - name: Unit and security tests (offline)
+      run: python scripts/test_offline.py
+
     - name: Test package installation
       run: |
         pip install dist/*.whl
@@ -39,16 +42,16 @@ jobs:
   validate-version:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    
+
     steps:
     - name: Check out code
       uses: actions/checkout@v4
-      
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: "3.10"
-        
+
     - name: Check pyproject.toml and server.json versions match
       run: |
         PY_VERSION=$(grep -E '^version = ' pyproject.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')
@@ -58,4 +61,4 @@ jobs:
         if [ "$PY_VERSION" != "$JSON_VERSION" ]; then
           echo "::error::pyproject.toml ($PY_VERSION) and server.json ($JSON_VERSION) must match. Bump both."
           exit 1
-        fi 
+        fi

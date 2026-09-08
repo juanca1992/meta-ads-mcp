@@ -74,7 +74,8 @@ async def test_post_still_sends_credentials_and_stringified_values(mock_httpx_cl
     await make_api_request("123/endpoint", "SECRET_TOKEN", caller_params, method="POST")
 
     sent = mock_httpx_client.post.call_args.kwargs["data"]
-    assert sent["access_token"] == "SECRET_TOKEN"
+    assert "access_token" not in sent
+    assert mock_httpx_client.post.call_args.kwargs["headers"]["Authorization"] == "Bearer SECRET_TOKEN"
     assert isinstance(sent["object_story_spec"], str)
 
 

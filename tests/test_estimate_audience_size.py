@@ -252,9 +252,9 @@ class TestEstimateAudienceSize:
         )
         
         result_data = json.loads(result)
-        # The @meta_api_tool decorator wraps errors in a 'data' field
-        assert "data" in result_data
-        nested_data = json.loads(result_data["data"])
+        # Errors stay at the top level; no nested JSON string
+        assert "error" in result_data
+        nested_data = result_data
         assert "error" in nested_data
         assert "account_id is required" in nested_data["error"]
         assert "details" in nested_data
@@ -268,9 +268,9 @@ class TestEstimateAudienceSize:
         )
         
         result_data = json.loads(result)
-        # The @meta_api_tool decorator wraps errors in a 'data' field
-        assert "data" in result_data
-        nested_data = json.loads(result_data["data"])
+        # Errors stay at the top level; no nested JSON string
+        assert "error" in result_data
+        nested_data = result_data
         assert "error" in nested_data
         assert "targeting specification is required" in nested_data["error"]
         assert "example" in nested_data
@@ -295,8 +295,8 @@ class TestEstimateAudienceSize:
             mock_api.assert_not_called()
 
             result_data = json.loads(result)
-            assert "data" in result_data
-            nested_data = json.loads(result_data["data"])
+            assert "error" in result_data
+            nested_data = result_data
             assert nested_data["error"] == "Missing target audience location"
             assert "action_required" in nested_data
 
@@ -433,9 +433,9 @@ class TestEstimateAudienceSize:
             result = await estimate_audience_size()
             
             result_data = json.loads(result)
-            # The @meta_api_tool decorator wraps errors in a 'data' field
-            assert "data" in result_data
-            nested_data = json.loads(result_data["data"])
+            # Errors stay at the top level; no nested JSON string
+            assert "error" in result_data
+            nested_data = result_data
             assert "error" in nested_data
     
     @pytest.mark.asyncio
@@ -446,9 +446,9 @@ class TestEstimateAudienceSize:
         )
         
         result_data = json.loads(result)
-        # The @meta_api_tool decorator wraps errors in a 'data' field
-        assert "data" in result_data
-        nested_data = json.loads(result_data["data"])
+        # Errors stay at the top level; no nested JSON string
+        assert "error" in result_data
+        nested_data = result_data
         assert "error" in nested_data
     
     @pytest.mark.asyncio
@@ -471,9 +471,9 @@ class TestEstimateAudienceSize:
             )
             
             result_data = json.loads(result)
-            # The @meta_api_tool decorator wraps errors in a 'data' field
-            assert "data" in result_data
-            nested_data = json.loads(result_data["data"])
+            # Errors stay at the top level; no nested JSON string
+            assert "error" in result_data
+            nested_data = result_data
             assert "error" in nested_data
             assert "Failed to get audience estimation from reachestimate endpoint" in nested_data["error"]
             assert "details" in nested_data
@@ -500,9 +500,9 @@ class TestEstimateAudienceSize:
             )
             
             result_data = json.loads(result)
-            # The @meta_api_tool decorator wraps errors in a 'data' field
-            assert "data" in result_data
-            nested_data = json.loads(result_data["data"])
+            # Errors stay at the top level; no nested JSON string
+            assert "error" in result_data
+            nested_data = result_data
             assert "error" in nested_data
             assert "No estimation data returned" in nested_data["error"]
             assert "raw_response" in nested_data

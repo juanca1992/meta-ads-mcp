@@ -1,5 +1,7 @@
 """Authentication related functionality for Meta Ads API."""
 
+from .security import diagnostic_print as print
+
 from typing import Any, Dict, Optional
 import time
 import platform
@@ -24,7 +26,7 @@ from .callback_server import (
 # where get_account_pages failed for regular users due to missing page permissions
 AUTH_SCOPE = "business_management,public_profile,pages_show_list,pages_read_engagement"
 AUTH_REDIRECT_URI = "http://localhost:8888/callback"
-AUTH_RESPONSE_TYPE = "token"
+AUTH_RESPONSE_TYPE = "code"
 
 # Log important configuration information
 logger.info("Authentication module initialized")
@@ -227,14 +229,15 @@ class AuthManager:
     
     def get_auth_url(self) -> str:
         """Generate the Facebook OAuth URL for desktop app flow"""
-        return (
-            f"https://www.facebook.com/v24.0/dialog/oauth?"
-            f"client_id={self.app_id}&"
-            f"redirect_uri={self.redirect_uri}&"
-            f"scope={AUTH_SCOPE}&"
-            f"response_type={AUTH_RESPONSE_TYPE}"
-        )
+        from urllib.parse import urlencode
+        from .callback_server import begin_oauth_flow
+        state = begin_oauth_flow(self.redirect_uri)
+        return "https://www.facebook.com/v24.0/dialog/oauth?" + urlencode({
+            "client_id": self.app_id, "redirect_uri": self.redirect_uri,
+            "scope": AUTH_SCOPE, "response_type": AUTH_RESPONSE_TYPE, "state": state,
+        })
     
+
     def authenticate(self, force_refresh: bool = False) -> Optional[str]:
         """
         Authenticate with Meta APIs
@@ -366,6 +369,26 @@ def process_token_response(token_container):
         return False
 
 
+def exchange_authorization_code(code, redirect_uri):
+    """Exchange once, with a bounded timeout; never expose provider payloads."""
+    secret = os.environ.get("META_APP_SECRET")
+    if not secret:
+        return None
+    try:
+        response = requests.get("https://graph.facebook.com/v24.0/oauth/access_token", params={
+            "client_id": meta_config.get_app_id(), "client_secret": secret,
+            "redirect_uri": redirect_uri, "code": code,
+        }, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("access_token"):
+            return None
+        return {"token": data["access_token"], "expires_in": data.get("expires_in", 3600)}
+    except Exception:
+        logger.error("Authorization code exchange failed")
+        return None
+
+
 def exchange_token_for_long_lived(short_lived_token):
     """
     Exchange a short-lived token for a long-lived token (60 days validity).
@@ -399,16 +422,16 @@ def exchange_token_for_long_lived(short_lived_token):
         }
         
         logger.debug(f"Making token exchange request to {url}")
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=30)
         
         if response.status_code == 200:
             data = response.json()
-            logger.debug(f"Token exchange response: {data}")
+            logger.debug("Token exchange completed")
             
             # Create TokenInfo from the response
             # The response includes access_token and expires_in (in seconds)
             new_token = data.get("access_token")
-            expires_in = data.get("expires_in")
+            expires_in = data.get("expires_in") or 3600
             
             if new_token:
                 logger.info(f"Received long-lived token, expires in {expires_in} seconds (~{expires_in//86400} days)")
@@ -420,7 +443,7 @@ def exchange_token_for_long_lived(short_lived_token):
                 logger.error("No access_token in exchange response")
                 return None
         else:
-            logger.error(f"Token exchange failed with status {response.status_code}: {response.text}")
+            logger.error("Token exchange failed with status %s", response.status_code)
             return None
     except Exception as e:
         logger.error(f"Error exchanging token: {e}")
@@ -429,7 +452,10 @@ def exchange_token_for_long_lived(short_lived_token):
 
 async def get_current_access_token() -> Optional[str]:
     """Get the current access token from auth manager"""
-    # Check for environment variable first - this takes highest precedence
+    from .http_auth_integration import _http_request, FastMCPAuthIntegration
+    if _http_request.get():
+        return FastMCPAuthIntegration.get_auth_token()
+    # The local token is only a fallback outside HTTP requests.
     env_token = os.environ.get("META_ACCESS_TOKEN")
     if env_token:
         logger.debug("Using access token from META_ACCESS_TOKEN environment variable")
@@ -514,6 +540,7 @@ def login():
             return
         
         # Get the auth URL and open the browser
+        auth_manager.redirect_uri = f"http://localhost:{port}/callback"
         auth_url = auth_manager.get_auth_url()
         print(f"Opening browser with URL: {auth_url}")
         webbrowser.open(auth_url)

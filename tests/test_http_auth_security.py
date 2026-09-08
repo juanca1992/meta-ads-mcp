@@ -67,12 +67,13 @@ def test_middleware_accepts_bearer_token():
     assert resp.json() == {"reached_handler": True}
 
 
-def test_middleware_blocks_unconfirmed_write_tool():
+@pytest.mark.parametrize("tool_name", ["update_campaign", "upload_ad_video"])
+def test_middleware_blocks_unconfirmed_write_tool(tool_name):
     client = TestClient(_build_app())
     resp = client.post(
         "/mcp",
         json={"jsonrpc": "2.0", "method": "tools/call", "id": 1,
-              "params": {"name": "update_campaign", "arguments": {
+              "params": {"name": tool_name, "arguments": {
                   "campaign_id": "123", "status": "ACTIVE"
               }}},
         headers={"Authorization": "Bearer some-meta-token-value-xyz"},
@@ -82,17 +83,18 @@ def test_middleware_blocks_unconfirmed_write_tool():
     assert "reached_handler" not in resp.text
 
 
-def test_middleware_accepts_matching_write_confirmation():
+@pytest.mark.parametrize("tool_name", ["update_campaign", "upload_ad_video"])
+def test_middleware_accepts_matching_write_confirmation(tool_name):
     client = TestClient(_build_app())
     resp = client.post(
         "/mcp",
         json={"jsonrpc": "2.0", "method": "tools/call", "id": 1,
-              "params": {"name": "update_campaign", "arguments": {
+              "params": {"name": tool_name, "arguments": {
                   "campaign_id": "123", "status": "ACTIVE"
               }}},
         headers={
             "Authorization": "Bearer some-meta-token-value-xyz",
-            "X-META-WRITE-CONFIRMATION": "update_campaign",
+            "X-META-WRITE-CONFIRMATION": tool_name,
         },
     )
     assert resp.status_code == 200
@@ -351,5 +353,5 @@ async def test_make_api_request_error_response_does_not_leak_token():
     assert secret not in serialized, (
         f"access_token leaked in error payload: {serialized}"
     )
-    assert "access_token=REDACTED" in full["request_url"]
-    assert "access_token=REDACTED" in full["url"]
+    assert "access_token=" not in full["request_url"]
+    assert "access_token=" not in full["url"]

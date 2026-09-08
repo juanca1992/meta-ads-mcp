@@ -122,6 +122,12 @@ def _is_account_disabled_error(error_code: Any, error_subcode: Any) -> bool:
     return False
 
 
+def _invalidate_local_auth():
+    from .http_auth_integration import _http_request
+    if not _http_request.get():
+        auth_manager.invalidate_token()
+
+
 class GraphAPIError(Exception):
     """Exception raised for errors from the Graph API."""
     def __init__(self, error_data: Dict[str, Any]):
@@ -145,7 +151,7 @@ class GraphAPIError(Exception):
                 )
             else:
                 logger.warning(f"Auth error detected (code: {code}). Invalidating token.")
-                auth_manager.invalidate_token()
+                _invalidate_local_auth()
         elif code == 368:
             logger.warning(
                 f"Action disallowed (code=368, subcode={subcode}). "
@@ -196,7 +202,9 @@ async def make_api_request(
     endpoint: str,
     access_token: str,
     params: Optional[Dict[str, Any]] = None,
-    method: str = "GET"
+    method: str = "GET",
+    files: Optional[Dict[str, Any]] = None,
+    timeout: float = 30.0,
 ) -> Dict[str, Any]:
     """
     Make a request to the Meta Graph API.
@@ -206,6 +214,8 @@ async def make_api_request(
         access_token: Meta API access token
         params: Additional query parameters
         method: HTTP method (GET, POST, DELETE)
+        files: Optional multipart files for POST; never logged or retried.
+        timeout: POST timeout in seconds (uploads may need longer).
     
     Returns:
         API response as a dictionary
@@ -225,6 +235,7 @@ async def make_api_request(
     
     headers = {
         "User-Agent": USER_AGENT,
+        "Authorization": f"Bearer {access_token}",
     }
     
     # Shallow-copy the caller's params: this function injects credentials
@@ -233,7 +244,7 @@ async def make_api_request(
     # responses that echo their params back (e.g. update_ad_creative's
     # attempted_updates on error 1815573).
     request_params = dict(params) if params else {}
-    request_params["access_token"] = access_token
+    request_params.pop("access_token", None)
 
     # Add appsecret_proof when META_APP_SECRET is configured.
     # Required for system user tokens and recommended by Meta for all
@@ -279,7 +290,8 @@ async def make_api_request(
                         request_params[key] = json.dumps(value)
                 
                 logger.debug(f"POST params (prepared): {masked_params}")
-                response = await client.post(url, data=request_params, headers=headers, timeout=30.0)
+                post_options = {"files": files} if files is not None else {}
+                response = await client.post(url, data=request_params, headers=headers, timeout=timeout, **post_options)
             elif method == "PUT":
                 # PUT for updates that Meta requires via PUT (e.g., creative_features_spec).
                 # Meta expects access_token as a query param, not in the body.
@@ -330,6 +342,7 @@ async def make_api_request(
             except:
                 error_info = {"status_code": e.response.status_code, "text": e.response.text}
             
+            error_info = _sanitize_response_payload(error_info, access_token, request_params.get("appsecret_proof", ""))
             logger.error(f"HTTP Error: {e.response.status_code} - {error_info}")
 
             # Log Meta rate limit headers even on errors
@@ -374,13 +387,13 @@ async def make_api_request(
                                 "code": error_code
                             }
                         }
-                    auth_manager.invalidate_token()
+                    _invalidate_local_auth()
                 elif e.response.status_code in [401, 403]:
                     logger.warning(f"Detected authentication error ({e.response.status_code})")
-                    auth_manager.invalidate_token()
+                    _invalidate_local_auth()
             elif e.response.status_code in [401, 403]:
                 logger.warning(f"Detected authentication error ({e.response.status_code})")
-                auth_manager.invalidate_token()
+                _invalidate_local_auth()
 
             # Include full details for technical users. URLs are scrubbed of
             # access_token/appsecret_proof — see GHSA-9gw6-46qc-99vr.
@@ -408,8 +421,33 @@ async def make_api_request(
             return {"error": error_payload}
         
         except Exception as e:
-            logger.error(f"Request Error: {str(e)}")
-            return {"error": {"message": str(e)}}
+            safe_error = _sanitize_response_payload(str(e), access_token, request_params.get("appsecret_proof", ""))
+            logger.error(f"Request Error: {safe_error}")
+            return {"error": {"message": safe_error}}
+
+
+async def make_paginated_request(endpoint, access_token, params, request=None):
+    """Follow cursors on the same trusted endpoint; never follow supplied URLs.
+
+    Refuse ambiguous partial results on errors, cursor loops or the safety cap.
+    """
+    request = request or make_api_request
+    query = dict(params)
+    rows, seen = [], set()
+    for _ in range(100):
+        page = await request(endpoint, access_token, query)
+        if "error" in page or not isinstance(page.get("data"), list):
+            return page
+        rows.extend(page["data"])
+        paging = page.get("paging", {})
+        if not paging.get("next"):
+            return {**page, "data": rows}
+        cursor = paging.get("cursors", {}).get("after")
+        if not cursor or cursor in seen:
+            return {"error": "Incomplete pagination: missing or repeated cursor"}
+        seen.add(cursor)
+        query = {**query, "after": cursor}
+    return {"error": "Pagination exceeded safety limit; narrow the query"}
 
 
 # Generic wrapper for all Meta API tools
@@ -517,8 +555,9 @@ def meta_api_tool(func):
                     if "error" in result_dict:
                         logger.error(f"Error in API response: {result_dict['error']}")
                         # If this is an app ID error, log more details
-                        if isinstance(result_dict.get("details", {}).get("error", {}), dict):
-                            error_obj = result_dict["details"]["error"]
+                        details = result_dict.get("details")
+                        error_obj = details.get("error") if isinstance(details, dict) else None
+                        if isinstance(error_obj, dict):
                             if error_obj.get("code") == 200 and "Provide valid app ID" in error_obj.get("message", ""):
                                 logger.error("Meta API authentication configuration issue")
                                 logger.error(f"Current app_id: {app_id}")

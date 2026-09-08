@@ -2,7 +2,7 @@
 
 import json
 from typing import Optional, Dict, Any
-from .api import meta_api_tool, make_api_request, ensure_act_prefix
+from .api import meta_api_tool, make_api_request, make_paginated_request, ensure_act_prefix
 from .server import mcp_server
 
 # Currencies that have no sub-units (i.e., are not denominated in cents).
@@ -51,7 +51,7 @@ async def get_ad_accounts(access_token: Optional[str] = None, user_id: str = "me
     Args:
         access_token: Meta API access token (optional - will use cached token if not provided)
         user_id: Meta user ID or "me" for the current user
-        limit: Maximum number of accounts to return (default: 200)
+        limit: Page size for accounts (default: 200); follows all pages, up to 100 pages
     """
     endpoint = f"{user_id}/adaccounts"
     params = {
@@ -59,7 +59,7 @@ async def get_ad_accounts(access_token: Optional[str] = None, user_id: str = "me
         "limit": limit
     }
 
-    data = await make_api_request(endpoint, access_token, params)
+    data = await make_paginated_request(endpoint, access_token, params, request=make_api_request)
 
     if "data" in data:
         data["data"] = [_normalize_account_monetary_fields(acc) for acc in data["data"]]

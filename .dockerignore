@@ -1,0 +1,7 @@
+**
+!requirements.txt
+!meta_ads_mcp/
+!meta_ads_mcp/**
+meta_ads_mcp/**/__pycache__/
+meta_ads_mcp/**/*.pyc
+meta_ads_mcp/**/.env*

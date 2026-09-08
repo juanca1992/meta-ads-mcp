@@ -1,5 +1,42 @@
 # Security
 
+## Local hardening (unreleased)
+
+The September 2026 audit corrections are present in this checkout; they are not
+claimed to be deployed or included in an upstream release.
+
+- Search cache entries are credential-scoped, expire after five minutes, and are
+  capped at 2,000 records. Fetch revalidates object access against Meta.
+- HTTP requests cannot use the operator's local token as a fallback or invalidate
+  that local token cache. A nonempty Bearer alone is not a verified user identity;
+  access to Meta objects is checked by Meta, and local file reads are forbidden
+  over HTTP. Keep the service behind a trusted proxy/private network.
+- Graph API access tokens use Authorization headers; diagnostic messages and
+  exception traces redact credentials. Operational output goes to stderr.
+- HTTP startup fails closed when authentication cannot be installed. Host/Origin
+  checks are enabled. Configure explicit proxy hosts/origins as described in
+  `STREAMABLE_HTTP_SETUP.md`.
+- Local video reads are stdio-only, require allowed roots and use descriptor-relative
+  no-symlink traversal on POSIX. HTTP clients send their own content as base64.
+- HTTP body limits are enforced while receiving data, including chunked requests.
+  At most two POST requests execute concurrently. Images are streamed with a
+  20 MiB cap, four concurrent downloads, and a 60-second overall deadline.
+- Downloads resolve DNS at connection time, reject non-global IPs and connect to
+  the validated literal IP while retaining the original TLS hostname. Environment
+  proxies are ignored for these untrusted URLs. Compressed HTTP responses are
+  rejected to bound decompression risk.
+- Local OAuth uses one-time expiring state, authorization code exchange and a
+  plain-text callback. The token retrieval HTTP endpoint has been removed.
+- Docker's context excludes local secrets/data, and the runtime uses an unprivileged
+  user. Secrets must be injected at runtime, never copied into the image.
+- Pull requests run offline tests and an OSV dependency audit; the latter also runs
+  weekly. Branch-protection requirements must be configured separately by the
+  repository administrator.
+
+For local configuration, use `chmod 600 .env` on POSIX. These changes prevent
+future exposure; they do not erase old logs or rotate existing tokens. If old
+logs or images were disclosed, handle those credentials separately.
+
 ## Reporting a vulnerability
 
 Please report security issues privately via GitHub: open a draft advisory

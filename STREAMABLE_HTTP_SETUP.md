@@ -462,3 +462,37 @@ If you're currently using stdio transport with MCP clients, you can support both
 > `https://meta-ads.mcp.pipeboard.co/`.
 
 Both transports access the same Meta Ads functionality and use the same underlying authentication system.
+
+
+## Security settings for this checkout
+
+The server now refuses to start if HTTP authentication cannot be installed.
+Host validation remains enabled behind proxies. Set the exact host sent by your
+proxy; do not use `*`:
+
+```dotenv
+META_ADS_ALLOWED_HOSTS=ads.example.com
+META_ADS_ALLOWED_ORIGINS=https://ads.example.com
+META_ADS_MAX_BODY_BYTES=16777216
+```
+
+Localhost and loopback hosts are included by default, with and without ports.
+External host entries must include a port if the client sends one (for example,
+`ads.example.com:8443`). Origins are needed only for browser clients that send
+an Origin header. Restart the process after loading these environment settings.
+The package does not load `.env` automatically.
+
+HTTP request bodies default to 16 MiB and can be configured up to 140 MiB.
+Oversize bodies return 413, malformed JSON-RPC objects return 400, and excess
+concurrent POST requests return 429. Only two POSTs execute at once. Align the
+reverse proxy's limits and timeouts with these settings. GET/SSE streams do not
+occupy POST slots.
+
+`upload_ad_video(file_path=...)` is restricted to local stdio on POSIX. HTTP
+clients must send `file` as base64 and the normal
+`X-META-WRITE-CONFIRMATION: upload_ad_video` header. The 100 MiB video cap is
+separate from the encoded HTTP body cap; base64 adds roughly one third.
+
+The header is an explicit write guard, not user authentication. Each Meta token
+can act only on objects Meta authorizes for it. The server never falls back to
+its operator's token when handling an HTTP request.

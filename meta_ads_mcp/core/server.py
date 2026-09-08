@@ -1,5 +1,7 @@
 """MCP server configuration for Meta Ads API."""
 
+from .security import diagnostic_print as print
+
 from mcp.server.fastmcp import FastMCP
 import argparse
 import os
@@ -311,15 +313,13 @@ def main():
         mcp_server.settings.port = args.port
         mcp_server.settings.stateless_http = True
         mcp_server.settings.json_response = not args.sse_response
-        # Disable DNS rebinding protection. The SDK auto-enables it when the
-        # server binds to a loopback host (127.0.0.1 / localhost / ::1) and
-        # ships a port-wildcard allowlist (127.0.0.1:*). An upstream nginx
-        # with `proxy_set_header Host $host;` strips the port from the Host
-        # header before forwarding, so the allowlist does not match and every
-        # request is rejected with HTTP 421 (the 1.0.106 production
-        # regression). The protection is irrelevant for a loopback-only
-        # service that no external client can reach.
-        mcp_server.settings.transport_security.enable_dns_rebinding_protection = False
+        from mcp.server.transport_security import TransportSecuritySettings
+        hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*", "127.0.0.1", "localhost", "[::1]"]
+        hosts.extend(x.strip() for x in os.environ.get("META_ADS_ALLOWED_HOSTS", "").split(",") if x.strip())
+        origins = [x.strip() for x in os.environ.get("META_ADS_ALLOWED_ORIGINS", "").split(",") if x.strip()]
+        mcp_server.settings.transport_security = TransportSecuritySettings(
+            enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins,
+        )
 
         # Import all tool modules to ensure they are registered
         logger.info("Ensuring all tools are registered for HTTP transport")
@@ -341,7 +341,8 @@ def main():
         except Exception as e:
             logger.error(f"Failed to setup FastMCP HTTP authentication integration: {e}")
             print(f"⚠️  FastMCP HTTP authentication integration setup failed: {e}")
-            print("   Server will still start but may not support header-based auth")
+            print("   Refusing to start without HTTP authentication", file=sys.stderr)
+            return 1
         
         # Log final server configuration
         logger.info(f"FastMCP server configured with:")

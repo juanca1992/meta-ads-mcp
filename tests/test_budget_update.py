@@ -266,8 +266,8 @@ class TestBudgetUpdateFunctionality:
         result_data = json.loads(result)
         
         # Verify error response structure
-        # The error is wrapped in a 'data' field as JSON string
-        error_data = json.loads(result_data['data'])
+        # Errors remain structured at the top level
+        error_data = result_data
         assert 'error' in error_data
         assert 'details' in error_data
         assert 'params_sent' in error_data
@@ -291,7 +291,7 @@ class TestBudgetUpdateFunctionality:
         result_data = json.loads(result)
         
         # Verify error response
-        error_data = json.loads(result_data['data'])
+        error_data = result_data
         assert 'error' in error_data
         assert "No ad set ID provided" in error_data['error']
         
@@ -311,7 +311,7 @@ class TestBudgetUpdateFunctionality:
         result_data = json.loads(result)
         
         # Verify error response
-        error_data = json.loads(result_data['data'])
+        error_data = result_data
         assert 'error' in error_data
         assert "No update parameters provided" in error_data['error']
         
@@ -334,7 +334,7 @@ class TestBudgetUpdateFunctionality:
         result_data = json.loads(result)
         
         # Verify error response structure
-        error_data = json.loads(result_data['data'])
+        error_data = result_data
         assert 'error' in error_data
         assert 'details' in error_data
         assert "API Error: Budget amount must be positive" in error_data['details']
@@ -355,7 +355,7 @@ class TestBudgetUpdateFunctionality:
         result_data = json.loads(result)
         
         # Verify error response structure
-        error_data = json.loads(result_data['data'])
+        error_data = result_data
         assert 'error' in error_data
         assert 'details' in error_data
         assert "API Error: Invalid budget format" in error_data['details']
@@ -376,7 +376,7 @@ class TestBudgetUpdateFunctionality:
         result_data = json.loads(result)
         
         # Verify error response structure
-        error_data = json.loads(result_data['data'])
+        error_data = result_data
         assert 'error' in error_data
         assert 'details' in error_data
         assert "Insufficient permissions" in error_data['details']

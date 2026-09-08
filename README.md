@@ -397,6 +397,60 @@ For advanced users who need to self-host, the package can be installed from sour
       - `access_token` (optional): Meta API access token
     - Returns: JSON response with image details including hash
 
+### Video uploads (`upload_ad_video`)
+
+Uploads one MP4/MOV (ISO-BMFF `ftyp`) or WebM container, up to **100 MiB**, to
+`POST /act_{account_id}/advideos` using multipart `source` and `title`.
+This stores an account media asset; it does not create an ad or place the video
+in a business portfolio folder. Call once per video for multiple uploads.
+
+Local paths are accepted **only in stdio on POSIX systems**, never over HTTP.
+For local files, configure the allowed directories in the **server environment**
+(or its `.env` file if your launcher loads it), then restart the MCP process:
+
+```dotenv
+META_ADS_VIDEO_UPLOAD_ROOTS=/home/juanca/Descargas
+```
+
+Separate multiple directories with `:` on Linux/macOS or `;` on Windows.
+Local access is disabled when this setting is absent. Symbolic links below the
+configured root and special files are rejected. Only grant directories intended
+for upload. On Windows, use base64 instead of a local path.
+The package does not automatically load `.env`; your process manager must load
+it, or you can export `META_ADS_VIDEO_UPLOAD_ROOTS` before starting the server.
+For a remote HTTP deployment, send the file as base64. The client cannot request
+files from the server filesystem.
+
+Example MCP arguments (replace the account ID and path for your upload):
+
+```json
+{
+  "account_id": "410102731986651",
+  "file_path": "/home/juanca/Descargas/lv_0_20260828164227.mp4"
+}
+```
+
+Alternatively supply `file` containing raw base64 or a `data:video/mp4;base64,...`
+URL, instead of `file_path`. `name` overrides the video title; local files default
+to their original filename. Base64 is useful for remote clients but increases
+request size. HTTP accepts 16 MiB per request by default (including JSON/base64).
+Set `META_ADS_MAX_BODY_BYTES` to a higher value if needed, up to 146800640 bytes
+(140 MiB), and align your proxy limit. At most two POST requests run concurrently;
+additional requests receive HTTP 429. The client/proxy may impose a smaller limit. Public video URLs and
+resumable uploads are not supported by this tool.
+
+The tool returns `video_id`, `account_id`, `name`, `bytes`, and
+`processing_status: "not_checked"`. Acceptance is not processing completion:
+call `get_ad_video` with that ID **and account_id** until `video_status` is
+`ready`, then pass the ID to `create_ad_creative`. Preserve returned IDs.
+Uploads are never automatically retried; after an ambiguous network failure,
+inspect the account before retrying to avoid duplicate videos.
+
+HTTP transport uses the existing write confirmation requirement:
+`X-META-WRITE-CONFIRMATION: upload_ad_video`.
+Authentication uses the existing Meta token flow. The token needs permission
+to upload media to the selected ad account.
+
 17. `mcp_meta_ads_get_ad_image`
     - Get, download, and visualize a Meta ad image in one step
     - Inputs:
