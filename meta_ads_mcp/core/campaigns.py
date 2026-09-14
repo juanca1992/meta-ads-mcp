@@ -47,7 +47,7 @@ async def get_campaigns(
     account_id = ensure_act_prefix(account_id)
     endpoint = f"{account_id}/campaigns"
     params = {
-        "fields": "id,name,objective,status,daily_budget,lifetime_budget,buying_type,start_time,stop_time,created_time,updated_time,bid_strategy,special_ad_categories",
+        "fields": "id,name,objective,status,daily_budget,lifetime_budget,buying_type,start_time,stop_time,created_time,updated_time,bid_strategy,special_ad_categories,special_ad_category_country,advantage_state_info,is_adset_budget_sharing_enabled,is_budget_schedule_enabled",
         "limit": limit
     }
     
@@ -104,7 +104,7 @@ async def get_campaign_details(campaign_id: str, access_token: Optional[str] = N
     
     endpoint = f"{campaign_id}"
     params = {
-        "fields": "id,name,objective,status,daily_budget,lifetime_budget,buying_type,start_time,stop_time,created_time,updated_time,bid_strategy,special_ad_categories,special_ad_category_country,budget_remaining,configured_status"
+        "fields": "id,name,objective,status,daily_budget,lifetime_budget,buying_type,start_time,stop_time,created_time,updated_time,bid_strategy,special_ad_categories,special_ad_category_country,budget_remaining,configured_status,advantage_state_info,is_adset_budget_sharing_enabled,is_budget_schedule_enabled"
     }
     
     data = await make_api_request(endpoint, access_token, params)
@@ -129,7 +129,15 @@ async def create_campaign(
     spend_cap: Optional[int] = None,
     campaign_budget_optimization: Optional[bool] = None,
     ab_test_control_setups: Optional[List[Dict[str, Any]]] = None,
-    use_adset_level_budgets: bool = False
+    use_adset_level_budgets: bool = False,
+    special_ad_category_country: Optional[List[str]] = None,
+    is_adset_budget_sharing_enabled: Optional[bool] = None,
+    budget_schedule_specs: Optional[List[Dict[str, Any]]] = None,
+    pacing_type: Optional[List[str]] = None,
+    start_time: Optional[str] = None,
+    stop_time: Optional[str] = None,
+    iterative_split_test_configs: Optional[List[Dict[str, Any]]] = None,
+    validate_only: bool = False,
 ) -> str:
     """
     Create a new Facebook or Instagram ad campaign in a Meta Ads account. Use this to start
@@ -140,7 +148,7 @@ async def create_campaign(
     Meta. Returns the new campaign id. Also known as: create campaign, new campaign, make
     campaign, campaign group, ABO campaign, CBO campaign.
 
-    Note: Campaigns do not support start_time for scheduling — set start_time on the ad set instead.
+    Creations default to PAUSED. No budget is invented when it is omitted.
 
     Args:
         account_id: Meta Ads account ID (format: act_XXXXXXXXX)
@@ -180,9 +188,20 @@ async def create_campaign(
     # Track whether the user explicitly provided special_ad_categories
     _user_provided_categories = special_ad_categories is not None
     
-    # Special_ad_categories is required by the API, set default if not provided
+    valid_objectives = {
+        "OUTCOME_AWARENESS", "OUTCOME_TRAFFIC", "OUTCOME_ENGAGEMENT",
+        "OUTCOME_LEADS", "OUTCOME_SALES", "OUTCOME_APP_PROMOTION",
+    }
+    if objective not in valid_objectives:
+        return json.dumps({"error": "objective must be a current OUTCOME_* objective", "valid_values": sorted(valid_objectives)}, indent=2)
+
+    # special_ad_categories must always be sent, including an explicit empty list.
     if special_ad_categories is None:
         special_ad_categories = []
+    if special_ad_categories and not special_ad_category_country:
+        return json.dumps({
+            "error": "special_ad_category_country is required when special_ad_categories is not empty"
+        }, indent=2)
     
     # Only warn if user omitted special_ad_categories entirely.
     # If they explicitly passed [] they are saying none are needed.
@@ -195,9 +214,8 @@ async def create_campaign(
             "to comply with Meta advertising policies. Ads without the correct category may be rejected."
         )
     
-    # For this example, we'll add a fixed daily budget if none is provided and we're not using ad set level budgets
-    if not daily_budget and not lifetime_budget and not use_adset_level_budgets:
-        daily_budget = "1000"  # Default to $10 USD
+    if daily_budget is not None and lifetime_budget is not None:
+        return json.dumps({"error": "Provide daily_budget or lifetime_budget, not both"}, indent=2)
     
     endpoint = f"{account_id}/campaigns"
     
@@ -207,6 +225,8 @@ async def create_campaign(
         "status": status,
         "special_ad_categories": json.dumps(special_ad_categories)  # Properly format as JSON string
     }
+    if special_ad_category_country is not None:
+        params["special_ad_category_country"] = json.dumps(special_ad_category_country)
     
     # Only set campaign-level budgets if we're not using ad set level budgets
     if not use_adset_level_budgets:
@@ -220,8 +240,23 @@ async def create_campaign(
         if campaign_budget_optimization is not None:
             params["campaign_budget_optimization"] = "true" if campaign_budget_optimization else "false"
     else:
-        # Meta API v24 requires is_adset_budget_sharing_enabled when not using campaign budget
+        # Meta API v26 requires an explicit budget-sharing choice for ABO campaigns.
         params["is_adset_budget_sharing_enabled"] = "false"
+
+    if is_adset_budget_sharing_enabled is not None:
+        params["is_adset_budget_sharing_enabled"] = "true" if is_adset_budget_sharing_enabled else "false"
+    if budget_schedule_specs is not None:
+        params["budget_schedule_specs"] = budget_schedule_specs
+    if pacing_type is not None:
+        params["pacing_type"] = pacing_type
+    if start_time is not None:
+        params["start_time"] = start_time
+    if stop_time is not None:
+        params["stop_time"] = stop_time
+    if iterative_split_test_configs is not None:
+        params["iterative_split_test_configs"] = iterative_split_test_configs
+    if validate_only:
+        params["execution_options"] = ["validate_only"]
 
     # Add new parameters
     if buying_type:
@@ -277,6 +312,14 @@ async def update_campaign(
     objective: Optional[str] = None,  # Add objective if it's updatable
     use_adset_level_budgets: Optional[bool] = None,  # Add other updatable fields as needed based on API docs
     adset_budgets: Optional[List[Dict[str, Any]]] = None,
+    special_ad_category_country: Optional[List[str]] = None,
+    is_adset_budget_sharing_enabled: Optional[bool] = None,
+    budget_schedule_specs: Optional[List[Dict[str, Any]]] = None,
+    pacing_type: Optional[List[str]] = None,
+    start_time: Optional[str] = None,
+    stop_time: Optional[str] = None,
+    migrate_to_advantage_plus: Optional[bool] = None,
+    validate_only: bool = False,
 ) -> str:
     """
     Update an existing campaign in a Meta Ads account.
@@ -329,6 +372,8 @@ async def update_campaign(
         # Note: Updating special_ad_categories might have specific API rules or might not be allowed after creation.
         # The API might require an empty list `[]` to clear categories. Check Meta Docs.
         params["special_ad_categories"] = json.dumps(special_ad_categories)
+    if special_ad_category_country is not None:
+        params["special_ad_category_country"] = json.dumps(special_ad_category_country)
     
     # Handle budget parameters based on use_adset_level_budgets setting
     if use_adset_level_budgets is not None:
@@ -383,6 +428,20 @@ async def update_campaign(
     # make_api_request JSON-encodes lists for POST form data.
     if adset_budgets is not None:
         params["adset_budgets"] = adset_budgets
+    if is_adset_budget_sharing_enabled is not None:
+        params["is_adset_budget_sharing_enabled"] = "true" if is_adset_budget_sharing_enabled else "false"
+    if budget_schedule_specs is not None:
+        params["budget_schedule_specs"] = budget_schedule_specs
+    if pacing_type is not None:
+        params["pacing_type"] = pacing_type
+    if start_time is not None:
+        params["start_time"] = start_time
+    if stop_time is not None:
+        params["stop_time"] = stop_time
+    if migrate_to_advantage_plus is not None:
+        params["migrate_to_advantage_plus"] = "true" if migrate_to_advantage_plus else "false"
+    if validate_only:
+        params["execution_options"] = ["validate_only"]
 
     if not params:
         return json.dumps({"error": "No update parameters provided"}, indent=2)
@@ -415,4 +474,4 @@ async def update_campaign(
             "error": f"Failed to update campaign {campaign_id}",
             "details": error_msg,
             "params_sent": params # Be careful about logging sensitive data if any
-        }, indent=2) 
+        }, indent=2)

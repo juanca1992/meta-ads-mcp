@@ -159,7 +159,7 @@ def _translate_asset_customization_rules(
     return translated_rules, updated_images
 
 
-# All writable creative_features_spec keys for Meta Ads API v24+.
+# All writable creative_features_spec keys for Meta Ads API v26.
 # Mirrors ALL_ENHANCEMENT_KEYS in pipeboard.co/lib/meta-ads-enhancement-keys.ts.
 # Setting each key to {"enroll_status": "OPT_OUT"} disables the enhancement.
 # NOTE: The legacy "standard_enhancements" key is deprecated for POST operations
@@ -528,7 +528,7 @@ async def get_creative_details(creative_id: str, access_token: Optional[str] = N
         return json.dumps({"error": "No creative ID provided"}, indent=2)
     endpoint = f"{creative_id}"
     # Note: dynamic_creative_spec is only valid on dynamic creatives and causes
-    # "(#100) Tried accessing nonexisting field" on simple creatives in API v24.
+    # "(#100) Tried accessing nonexisting field" on simple creatives in API v26.
     # We fetch the safe fields first, then try dynamic_creative_spec separately.
     params = {
         "fields": "id,name,status,thumbnail_url,image_url,image_hash,object_story_spec,object_type,body,title,effective_object_story_id,asset_feed_spec{images,videos,bodies,titles,descriptions,link_urls,ad_formats,call_to_action_types,optimization_type,asset_customization_rules},url_tags,link_url"
@@ -577,6 +577,10 @@ async def create_ad(
     status: str = "PAUSED",
     bid_amount: Optional[int] = None,
     tracking_specs: Optional[List[Dict[str, Any]]] = None,
+    conversion_domain: Optional[str] = None,
+    creative_automation_spec: Optional[Dict[str, Any]] = None,
+    engagement_audience: Optional[bool] = None,
+    validate_only: bool = False,
     access_token: Optional[str] = None
 ) -> str:
     """
@@ -626,6 +630,14 @@ async def create_ad(
     # Add tracking specs if provided
     if tracking_specs is not None:
         params["tracking_specs"] = json.dumps(tracking_specs) # Needs to be JSON encoded string
+    if conversion_domain is not None:
+        params["conversion_domain"] = conversion_domain
+    if creative_automation_spec is not None:
+        params["creative_automation_spec"] = creative_automation_spec
+    if engagement_audience is not None:
+        params["engagement_audience"] = "true" if engagement_audience else "false"
+    if validate_only:
+        params["execution_options"] = ["validate_only"]
     
     try:
         data = await make_api_request(endpoint, access_token, params, method="POST")
@@ -1832,6 +1844,12 @@ async def create_ad_creative(
     images: Optional[List[Dict[str, Any]]] = None,
     facebook_branded_content: Optional[Dict[str, Any]] = None,
     instagram_branded_content: Optional[Dict[str, Any]] = None,
+    page_welcome_message: Optional[str] = None,
+    marketing_message_structured_spec: Optional[Dict[str, Any]] = None,
+    destination_spec: Optional[Dict[str, Any]] = None,
+    wamo_whatsapp_identity_spec: Optional[Dict[str, Any]] = None,
+    interactive_components_spec: Optional[Dict[str, Any]] = None,
+    validate_only: bool = False,
 ) -> str:
     """
     Create a new ad creative using an uploaded image hash, video ID, or an existing post.
@@ -1951,7 +1969,7 @@ async def create_ad_creative(
         phone_number: Phone number for CALL_NOW call-to-action ads (click-to-call).
                      Required when call_to_action_type is CALL_NOW. Use E.164 format
                      (e.g., "+18005551234"). The number is sent to Meta as
-                     call_to_action.value.link = "tel:<phone_number>" (Meta v24
+                     call_to_action.value.link = "tel:<phone_number>" (Meta v26
                      rejects a literal "phone_number" key with code 100). Common
                      use case: geo-routed call ads with different phone numbers
                      per ad set.
@@ -2340,7 +2358,7 @@ async def create_ad_creative(
         # Track if this is a video creative
         is_video = bool(video_id or videos)
 
-        # Meta API v24 REQUIRES a thumbnail (image_hash or image_url) in video_data.
+        # Meta API v26 requires a thumbnail (image_hash or image_url) in video_data.
         # If the caller didn't provide one, auto-fetch from the video object.
         # Guard on `video_id` (not `is_video`): when only `videos=[...]` is passed,
         # `video_id` is None and calling Meta with a None ID returns a generic error
@@ -2402,7 +2420,7 @@ async def create_ad_creative(
                         if lead_gen_form_id:
                             cta_osi_value["lead_gen_form_id"] = lead_gen_form_id
                         if phone_number:
-                            # CALL_NOW CTA: Meta v24 rejects a literal "phone_number"
+                            # CALL_NOW CTA: Meta v26 rejects a literal "phone_number"
                             # key inside call_to_action.value with code 100
                             # ("Invalid keys phone_number were found in param
                             # call_to_action[value]"). The supported shape is
@@ -2451,7 +2469,7 @@ async def create_ad_creative(
             images_array = None
             if videos:
                 # Multiple videos with placement labels (e.g., 1:1 Feed + 9:16 Reels).
-                # Auto-fetch missing thumbnails in parallel — Meta API v24 requires a
+                # Auto-fetch missing thumbnails in parallel — Meta API v26 requires a
                 # thumbnail (image_hash or image_url) for each entry in
                 # asset_feed_spec.videos[]. Without it, creates fail with error 1443226
                 # ("Please specify one of image_hash or image_url in the video_data
@@ -2562,7 +2580,7 @@ async def create_ad_creative(
             #   asset_feed_spec for multi-image creatives.
             #
             # DOF + video:
-            #   object_story_spec must be bare {page_id} (Meta v24 rejects
+            #   object_story_spec must be bare {page_id} (Meta v26 rejects
             #   video_data anchor inside object_story_spec with error 1443048).
             #   So link_urls, ad_formats, and call_to_action_types MUST live
             #   in asset_feed_spec — otherwise Meta returns error_subcode
@@ -2631,7 +2649,7 @@ async def create_ad_creative(
                     if lead_gen_form_id:
                         cta_value["lead_gen_form_id"] = lead_gen_form_id
                     if phone_number:
-                        # CALL_NOW: Meta v24 supports only
+                        # CALL_NOW: Meta v26 supports only
                         # call_to_action.value.link = "tel:+<E.164 number>"; a
                         # literal "phone_number" key is rejected with code 100.
                         cta_value["link"] = f"tel:{phone_number}"
@@ -2657,7 +2675,7 @@ async def create_ad_creative(
             #   asset_feed_spec. Verified working on v24.
             #
             # - DOF + video — object_story_spec MUST carry a `link_data.link`
-            #   anchor. Meta v24 rejects bare {page_id} for DOF + video with
+            #   anchor. Meta v26 rejects bare {page_id} for DOF + video with
             #   error_subcode 2061015 ("The link field is required";
             #   blame_field_specs=[["link"]]). A video_data anchor would trip
             #   1443048 ("object_story_spec ill formed") instead, so we use a
@@ -2676,7 +2694,7 @@ async def create_ad_creative(
                     "page_id": page_id,
                 }
                 if is_dof and is_video:
-                    # Anchor link for Meta v24 DOF + video. Use link_url when
+                    # Anchor link for Meta v26 DOF + video. Use link_url when
                     # provided; fall back to the Meta lead-gen placeholder so
                     # lead_gen_form_id flows still produce a non-empty anchor.
                     anchor_link = link_url or (
@@ -2711,7 +2729,7 @@ async def create_ad_creative(
                     if lead_gen_form_id:
                         cta_value["lead_gen_form_id"] = lead_gen_form_id
                     if phone_number:
-                        # CALL_NOW: Meta v24 supports only
+                        # CALL_NOW: Meta v26 supports only
                         # call_to_action.value.link = "tel:+<E.164 number>".
                         cta_value["link"] = f"tel:{phone_number}"
                     if event_id and call_to_action_type in ("EVENT_RSVP", "BUY_TICKETS"):
@@ -2742,7 +2760,7 @@ async def create_ad_creative(
                 if headline:
                     video_data["title"] = headline
 
-                # NOTE: Meta API v24 rejects "description" in video_data AND
+                # NOTE: Meta API v26 rejects "description" in video_data AND
                 # "link_description" in call_to_action.value (deprecated).
                 # Description is not settable for simple video creatives.
 
@@ -2755,7 +2773,7 @@ async def create_ad_creative(
                     # Click-to-WhatsApp: Meta derives the destination from the
                     # Page's linked WhatsApp number, so the CTA carries no value.
                     # Passing ANY extra parameter here (callers commonly send a
-                    # wa.me URL via link_url) makes Meta v24 reject the creative
+                    # wa.me URL via link_url) makes Meta v26 reject the creative
                     # with code 105 / error_subcode 1815630 ("Too many parameters
                     # in Call To Action — Please remove parameter 'link' from the
                     # value of WHATSAPP_MESSAGE call to action type"). The correct
@@ -2767,7 +2785,7 @@ async def create_ad_creative(
                     if lead_gen_form_id:
                         cta_value["lead_gen_form_id"] = lead_gen_form_id
                     if phone_number:
-                        # CALL_NOW: Meta v24 supports only
+                        # CALL_NOW: Meta v26 supports only
                         # call_to_action.value.link = "tel:+<E.164 number>".
                         cta_value["link"] = f"tel:{phone_number}"
                 if cta_type:
@@ -2832,7 +2850,7 @@ async def create_ad_creative(
                     if lead_gen_form_id:
                         cta_value["lead_gen_form_id"] = lead_gen_form_id
                     if phone_number:
-                        # CALL_NOW: Meta v24 supports only
+                        # CALL_NOW: Meta v26 supports only
                         # call_to_action.value.link = "tel:+<E.164 number>";
                         # the literal "phone_number" key is rejected with
                         # code 100 ("Invalid keys phone_number were found in
@@ -2885,6 +2903,20 @@ async def create_ad_creative(
             creative_data["facebook_branded_content"] = facebook_branded_content
         if instagram_branded_content:
             creative_data["instagram_branded_content"] = instagram_branded_content
+
+        # Current messaging and lead-destination properties from Graph API v26.
+        current_messaging_fields = {
+            "page_welcome_message": page_welcome_message,
+            "marketing_message_structured_spec": marketing_message_structured_spec,
+            "destination_spec": destination_spec,
+            "wamo_whatsapp_identity_spec": wamo_whatsapp_identity_spec,
+            "interactive_components_spec": interactive_components_spec,
+        }
+        creative_data.update({
+            key: value for key, value in current_messaging_fields.items() if value is not None
+        })
+        if validate_only:
+            creative_data["execution_options"] = ["validate_only"]
 
         # Make API request to create the creative
         data = await make_api_request(endpoint, access_token, creative_data, method="POST")
@@ -3613,7 +3645,5 @@ async def get_account_pages(account_id: str, access_token: Optional[str] = None)
             "error": "Failed to get account pages",
             "details": str(e)
         }, indent=2)
-
-
 
 

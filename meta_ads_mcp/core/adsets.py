@@ -7,6 +7,70 @@ from .accounts import get_ad_accounts
 from .server import mcp_server
 
 
+_LEAD_DESTINATION_GOALS = {
+    "ON_AD": {"LEAD_GENERATION", "QUALITY_LEAD", "QUALITY_CALL", "MEANINGFUL_CALL_ATTEMPT"},
+    "WEBSITE": {"OFFSITE_CONVERSIONS", "LINK_CLICKS", "LANDING_PAGE_VIEWS"},
+    "WHATSAPP": {
+        "CONVERSATIONS", "MESSAGING_APPOINTMENT_CONVERSION",
+        "MESSAGING_DEEP_CONVERSATION_AND_FOLLOW", "MESSAGING_PURCHASE_CONVERSION",
+    },
+    "INSTAGRAM_DIRECT": {
+        "CONVERSATIONS", "MESSAGING_APPOINTMENT_CONVERSION",
+        "MESSAGING_DEEP_CONVERSATION_AND_FOLLOW", "MESSAGING_PURCHASE_CONVERSION",
+    },
+}
+
+
+def _lead_configuration_issues(
+    destination_type: Optional[str],
+    optimization_goal: str,
+    promoted_object: Optional[Dict[str, Any]],
+) -> tuple[List[str], List[str]]:
+    """Validate combinations that are stable in Meta v26; leave new enums to Meta."""
+    destination = str(destination_type or "").upper()
+    goal = str(optimization_goal or "").upper()
+    errors: List[str] = []
+    warnings: List[str] = []
+    if not destination:
+        errors.append("destination_type is required for OUTCOME_LEADS")
+        return errors, warnings
+    if destination == "MESSENGER":
+        errors.append(
+            "Third-party creation of Click-to-Messenger Lead Generation ads is not available in Marketing API v26; use Ads Manager."
+        )
+    supported = _LEAD_DESTINATION_GOALS.get(destination)
+    if supported and goal not in supported:
+        errors.append(
+            f"optimization_goal {goal} is incompatible with OUTCOME_LEADS destination {destination}; "
+            f"use one of {', '.join(sorted(supported))}"
+        )
+    if destination == "WEBSITE" and goal == "OFFSITE_CONVERSIONS":
+        if not isinstance(promoted_object, dict) or not (
+            promoted_object.get("pixel_id") or promoted_object.get("dataset_id")
+        ):
+            errors.append(
+                "WEBSITE + OFFSITE_CONVERSIONS requires promoted_object with pixel_id or dataset_id"
+            )
+    if destination not in _LEAD_DESTINATION_GOALS and destination != "MESSENGER":
+        warnings.append(
+            f"{destination} is not in the MCP's verified OUTCOME_LEADS matrix; Meta v26 will perform final validation"
+        )
+    return errors, warnings
+
+
+@mcp_server.tool()
+async def validate_lead_campaign_configuration(
+    destination_type: str,
+    optimization_goal: str,
+    promoted_object: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Validate an OUTCOME_LEADS ad-set combination without creating anything."""
+    errors, warnings = _lead_configuration_issues(
+        destination_type, optimization_goal, promoted_object
+    )
+    return json.dumps({"valid": not errors, "errors": errors, "warnings": warnings}, indent=2)
+
+
 @mcp_server.tool()
 @meta_api_tool
 async def get_adsets(account_id: str, access_token: Optional[str] = None, limit: int = 10, campaign_id: str = "") -> str:
@@ -29,14 +93,14 @@ async def get_adsets(account_id: str, access_token: Optional[str] = None, limit:
     if campaign_id:
         endpoint = f"{campaign_id}/adsets"
         params = {
-            "fields": "id,name,campaign_id,status,daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,is_dynamic_creative,frequency_control_specs{event,interval_days,max_frequency},regional_regulated_categories,regional_regulation_identities",
+            "fields": "id,name,campaign_id,status,daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,is_dynamic_creative,frequency_control_specs{event,interval_days,max_frequency},regional_regulated_categories,regional_regulation_identities,automatic_manual_state,is_incremental_attribution_enabled,placement_soft_opt_out,full_funnel_exploration_mode,optimization_sub_event,cost_bidding_mode,existing_customer_budget_percentage,multi_optimization_goal_weight,is_budget_schedule_enabled",
             "limit": limit
         }
     else:
         # Use account endpoint if no campaign_id is given
         endpoint = f"{account_id}/adsets"
         params = {
-            "fields": "id,name,campaign_id,status,daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,is_dynamic_creative,frequency_control_specs{event,interval_days,max_frequency},regional_regulated_categories,regional_regulation_identities",
+            "fields": "id,name,campaign_id,status,daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,is_dynamic_creative,frequency_control_specs{event,interval_days,max_frequency},regional_regulated_categories,regional_regulation_identities,automatic_manual_state,is_incremental_attribution_enabled,placement_soft_opt_out,full_funnel_exploration_mode,optimization_sub_event,cost_bidding_mode,existing_customer_budget_percentage,multi_optimization_goal_weight,is_budget_schedule_enabled",
             "limit": limit
         }
         # Note: Removed the attempt to add campaign_id to params for the account endpoint case, 
@@ -69,7 +133,7 @@ async def get_adset_details(adset_id: str, access_token: Optional[str] = None) -
     endpoint = f"{adset_id}"
     # Explicitly prioritize frequency_control_specs in the fields request
     params = {
-        "fields": "id,name,campaign_id,status,frequency_control_specs{event,interval_days,max_frequency},daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,attribution_spec,destination_type,promoted_object,pacing_type,budget_remaining,dsa_beneficiary,dsa_payor,is_dynamic_creative,regional_regulated_categories,regional_regulation_identities"
+        "fields": "id,name,campaign_id,status,frequency_control_specs{event,interval_days,max_frequency},daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,attribution_spec,destination_type,promoted_object,pacing_type,budget_remaining,dsa_beneficiary,dsa_payor,is_dynamic_creative,regional_regulated_categories,regional_regulation_identities,automatic_manual_state,is_incremental_attribution_enabled,placement_soft_opt_out,full_funnel_exploration_mode,optimization_sub_event,cost_bidding_mode,existing_customer_budget_percentage,multi_optimization_goal_weight,is_budget_schedule_enabled"
     }
     
     data = await make_api_request(endpoint, access_token, params)
@@ -111,6 +175,19 @@ async def create_adset(
     regional_regulated_categories: Optional[List[str]] = None,
     regional_regulation_identities: Optional[Dict[str, Any]] = None,
     attribution_spec: Optional[List[Dict[str, Any]]] = None,
+    automatic_manual_state: Optional[str] = None,
+    is_incremental_attribution_enabled: Optional[bool] = None,
+    placement_soft_opt_out: Optional[Dict[str, Any]] = None,
+    full_funnel_exploration_mode: Optional[str] = None,
+    optimization_sub_event: Optional[str] = None,
+    cost_bidding_mode: Optional[str] = None,
+    existing_customer_budget_percentage: Optional[int] = None,
+    multi_optimization_goal_weight: Optional[str] = None,
+    is_budget_schedule_enabled: Optional[bool] = None,
+    budget_schedule_specs: Optional[List[Dict[str, Any]]] = None,
+    brand_safety_config: Optional[Dict[str, Any]] = None,
+    ad_set_goal: Optional[Dict[str, Any]] = None,
+    validate_only: bool = False,
     access_token: Optional[str] = None
 ) -> str:
     """
@@ -130,7 +207,9 @@ async def create_adset(
                           OUTCOME_ENGAGEMENT "Profile and Page visits" (PROFILE_AND_PAGE_ENGAGEMENT with destination_type INSTAGRAM_PROFILE / FACEBOOK_PAGE / INSTAGRAM_PROFILE_AND_FACEBOOK_PAGE) is shown in Ads Manager but NOT supported via the Marketing API — Meta rejects every variant (code 100). Closest API-supported option is POST_ENGAGEMENT + ON_POST.
                           OUTCOME_TRAFFIC + WEBSITE: LANDING_PAGE_VIEWS, LINK_CLICKS, IMPRESSIONS, REACH.
                           OUTCOME_AWARENESS: REACH, IMPRESSIONS, AD_RECALL_LIFT, THRUPLAY.
-                          OUTCOME_LEADS: LEAD_GENERATION, QUALITY_LEAD (forms), QUALITY_CALL (calls), OFFSITE_CONVERSIONS, LINK_CLICKS (website).
+                          OUTCOME_LEADS: LEAD_GENERATION, QUALITY_LEAD (forms), QUALITY_CALL or
+                          MEANINGFUL_CALL_ATTEMPT (calls), OFFSITE_CONVERSIONS or LINK_CLICKS
+                          (website), and Meta-supported messaging optimization goals.
                           OUTCOME_SALES: OFFSITE_CONVERSIONS, VALUE, CONVERSATIONS, LINK_CLICKS, IMPRESSIONS, REACH.
                           OUTCOME_APP_PROMOTION: APP_INSTALLS, APP_INSTALLS_AND_OFFSITE_CONVERSIONS, VALUE.
         billing_event: How you're charged (e.g., 'IMPRESSIONS', 'LINK_CLICKS')
@@ -145,9 +224,9 @@ async def create_adset(
                         CBO NOTE: Do NOT set this if the parent campaign already has a budget
                         (Campaign Budget Optimization / CBO mode). Omit this field when the
                         campaign uses CBO — the ad set inherits the campaign budget automatically.
-        targeting: Targeting specs (age, location, interests, etc).
-                  targeting_automation.advantage_audience defaults to 0 if not set (Meta API v24+ requirement).
-                  Set to 1 to enable Advantage+ Audience (requires age_max>=65). Use search_interests for interest IDs.
+        targeting: Explicit targeting specs. Must include geo_locations and
+                  targeting_automation.advantage_audience (1 for Advantage+ Audience, 0 for manual).
+                  The MCP never invents a country or silently changes automation settings.
         bid_amount: Bid amount in account currency (in cents).
                    REQUIRED for: LOWEST_COST_WITH_BID_CAP, COST_CAP, TARGET_COST.
                    NOT USED by: LOWEST_COST_WITH_MIN_ROAS (uses bid_constraints instead).
@@ -289,22 +368,9 @@ async def create_adset(
     # Meta's API reject incompatible combinations.
     # See: facebook-python-business-sdk AdSet.DestinationType
 
-    # Basic targeting is required if not provided
-    if not targeting:
-        targeting = {
-            "age_min": 18,
-            "age_max": 65,
-            "geo_locations": {"countries": ["US"]},
-            "targeting_automation": {"advantage_audience": 1}
-        }
-
-    # Meta API v24+ requires targeting_automation.advantage_audience.
-    # Default to 0 (disabled) when user provides custom targeting, since
-    # advantage_audience=1 enforces constraints (e.g. age_max >= 65) that
-    # conflict with explicit targeting parameters.
-    if "targeting_automation" not in targeting:
-        targeting["targeting_automation"] = {"advantage_audience": 0}
-
+    # Targeting is client-specific. Never invent a country or audience. Meta
+    # can report the final requirement for non-lead objectives; OUTCOME_LEADS
+    # is checked explicitly after the parent campaign is inspected below.
     # Bid strategies that require bid_amount (not bid_constraints)
     strategies_requiring_bid_amount = [
         'LOWEST_COST_WITH_BID_CAP',
@@ -318,7 +384,7 @@ async def create_adset(
         if bid_strategy == 'LOWEST_COST':
             return json.dumps({
                 "error": "'LOWEST_COST' is not a valid bid_strategy value",
-                "details": "The 'LOWEST_COST' bid strategy is not valid in Meta Ads API v24.0",
+                "details": "The 'LOWEST_COST' bid strategy is not valid in Meta Ads API v26.0",
                 "workaround": "Use 'LOWEST_COST_WITHOUT_CAP' instead (no bid_amount required)",
                 "valid_values": [
                     "LOWEST_COST_WITHOUT_CAP (recommended - no bid_amount required)",
@@ -349,13 +415,49 @@ async def create_adset(
     # Pre-flight check: fetch campaign data to catch common errors before hitting Meta's API.
     # Triggered when the user provides a budget (CBO conflict check) or omits bid_amount
     # (bid strategy compatibility check). A single API call covers both checks.
-    needs_campaign_check = (daily_budget is not None or lifetime_budget is not None or bid_amount is None)
+    probable_lead = (
+        str(destination_type or "").upper() in {*_LEAD_DESTINATION_GOALS, "MESSENGER"}
+        or str(optimization_goal).upper()
+        in {
+            "LEAD_GENERATION", "QUALITY_LEAD", "QUALITY_CALL",
+            "MEANINGFUL_CALL_ATTEMPT", "MESSAGING_APPOINTMENT_CONVERSION",
+            "MESSAGING_DEEP_CONVERSATION_AND_FOLLOW",
+        }
+    )
+    needs_campaign_check = (
+        daily_budget is not None or lifetime_budget is not None
+        or bid_amount is None or probable_lead
+    )
+    configuration_warnings: List[str] = []
     if needs_campaign_check:
         try:
             campaign_data = await make_api_request(
-                campaign_id, access_token, {"fields": "bid_strategy,name,daily_budget,lifetime_budget"}
+                campaign_id, access_token, {"fields": "bid_strategy,name,daily_budget,lifetime_budget,objective"}
             )
             campaign_name = campaign_data.get("name", campaign_id)
+
+            if campaign_data.get("objective") == "OUTCOME_LEADS":
+                if not targeting or not targeting.get("geo_locations"):
+                    return json.dumps({
+                        "error": "OUTCOME_LEADS requires explicit targeting.geo_locations; no country is assumed"
+                    }, indent=2)
+                automation = targeting.get("targeting_automation")
+                if not isinstance(automation, dict) or automation.get("advantage_audience") not in {0, 1, False, True}:
+                    return json.dumps({
+                        "error": (
+                            "OUTCOME_LEADS requires targeting.targeting_automation."
+                            "advantage_audience to be explicitly set to 0 or 1"
+                        )
+                    }, indent=2)
+                errors, configuration_warnings = _lead_configuration_issues(
+                    destination_type, optimization_goal, promoted_object
+                )
+                if errors:
+                    return json.dumps({
+                        "error": "Invalid OUTCOME_LEADS ad set configuration",
+                        "details": errors,
+                        "warnings": configuration_warnings,
+                    }, indent=2)
 
             # Check 1: CBO budget conflict.
             # Meta does not allow budgets at both the campaign and ad set level.
@@ -396,8 +498,9 @@ async def create_adset(
         "status": status,
         "optimization_goal": optimization_goal,
         "billing_event": billing_event,
-        "targeting": json.dumps(targeting)  # Properly format as JSON string
     }
+    if targeting is not None:
+        params["targeting"] = json.dumps(targeting)
     
     # Convert budget values to strings if they aren't already
     if daily_budget is not None:
@@ -456,9 +559,28 @@ async def create_adset(
 
     if attribution_spec is not None:
         params["attribution_spec"] = json.dumps(attribution_spec)
+    current_options = {
+        "automatic_manual_state": automatic_manual_state,
+        "is_incremental_attribution_enabled": is_incremental_attribution_enabled,
+        "placement_soft_opt_out": placement_soft_opt_out,
+        "full_funnel_exploration_mode": full_funnel_exploration_mode,
+        "optimization_sub_event": optimization_sub_event,
+        "cost_bidding_mode": cost_bidding_mode,
+        "existing_customer_budget_percentage": existing_customer_budget_percentage,
+        "multi_optimization_goal_weight": multi_optimization_goal_weight,
+        "is_budget_schedule_enabled": is_budget_schedule_enabled,
+        "budget_schedule_specs": budget_schedule_specs,
+        "brand_safety_config": brand_safety_config,
+        "ad_set_goal": ad_set_goal,
+    }
+    params.update({key: value for key, value in current_options.items() if value is not None})
+    if validate_only:
+        params["execution_options"] = ["validate_only"]
 
     try:
         data = await make_api_request(endpoint, access_token, params, method="POST")
+        if configuration_warnings and isinstance(data, dict):
+            data["configuration_warnings"] = configuration_warnings
         return json.dumps(data, indent=2)
     except Exception as e:
         error_msg = str(e)
@@ -510,6 +632,19 @@ async def update_adset(adset_id: str, frequency_control_specs: Optional[List[Dic
                         regional_regulated_categories: Optional[List[str]] = None,
                         regional_regulation_identities: Optional[Dict[str, Any]] = None,
                         attribution_spec: Optional[List[Dict[str, Any]]] = None,
+                        automatic_manual_state: Optional[str] = None,
+                        is_incremental_attribution_enabled: Optional[bool] = None,
+                        placement_soft_opt_out: Optional[Dict[str, Any]] = None,
+                        full_funnel_exploration_mode: Optional[str] = None,
+                        optimization_sub_event: Optional[str] = None,
+                        cost_bidding_mode: Optional[str] = None,
+                        existing_customer_budget_percentage: Optional[int] = None,
+                        multi_optimization_goal_weight: Optional[str] = None,
+                        is_budget_schedule_enabled: Optional[bool] = None,
+                        budget_schedule_specs: Optional[List[Dict[str, Any]]] = None,
+                        brand_safety_config: Optional[Dict[str, Any]] = None,
+                        ad_set_goal: Optional[Dict[str, Any]] = None,
+                        validate_only: bool = False,
                         access_token: Optional[str] = None) -> str:
     """
     Update an ad set with new settings including frequency caps and budgets.
@@ -576,7 +711,7 @@ async def update_adset(adset_id: str, frequency_control_specs: Optional[List[Dic
         if bid_strategy == 'LOWEST_COST':
             return json.dumps({
                 "error": "'LOWEST_COST' is not a valid bid_strategy value",
-                "details": "The 'LOWEST_COST' bid strategy is not valid in Meta Ads API v24.0",
+                "details": "The 'LOWEST_COST' bid strategy is not valid in Meta Ads API v26.0",
                 "workaround": "Use 'LOWEST_COST_WITHOUT_CAP' instead (no bid_amount required)",
                 "valid_values": [
                     "LOWEST_COST_WITHOUT_CAP (recommended - no bid_amount required)",
@@ -677,6 +812,23 @@ async def update_adset(adset_id: str, frequency_control_specs: Optional[List[Dic
 
     if attribution_spec is not None:
         params['attribution_spec'] = json.dumps(attribution_spec)
+    current_options = {
+        "automatic_manual_state": automatic_manual_state,
+        "is_incremental_attribution_enabled": is_incremental_attribution_enabled,
+        "placement_soft_opt_out": placement_soft_opt_out,
+        "full_funnel_exploration_mode": full_funnel_exploration_mode,
+        "optimization_sub_event": optimization_sub_event,
+        "cost_bidding_mode": cost_bidding_mode,
+        "existing_customer_budget_percentage": existing_customer_budget_percentage,
+        "multi_optimization_goal_weight": multi_optimization_goal_weight,
+        "is_budget_schedule_enabled": is_budget_schedule_enabled,
+        "budget_schedule_specs": budget_schedule_specs,
+        "brand_safety_config": brand_safety_config,
+        "ad_set_goal": ad_set_goal,
+    }
+    params.update({key: value for key, value in current_options.items() if value is not None})
+    if validate_only:
+        params["execution_options"] = ["validate_only"]
 
     if not params:
         return json.dumps({"error": "No update parameters provided"}, indent=2)
@@ -694,4 +846,4 @@ async def update_adset(adset_id: str, frequency_control_specs: Optional[List[Dic
             "error": f"Failed to update ad set {adset_id}",
             "details": error_msg,
             "params_sent": params
-        }, indent=2) 
+        }, indent=2)

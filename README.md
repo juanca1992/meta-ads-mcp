@@ -39,13 +39,17 @@ Pipeboard ships a remote [MCP server](https://modelcontextprotocol.io/) for ever
 
 | Platform | Remote MCP URL | Surface |
 |---|---|---|
-| **Meta Ads MCP** (Facebook + Instagram) | `https://meta-ads.mcp.pipeboard.co/` | **42 tools** — campaigns, ad sets, ads, creatives (incl. dynamic creative testing), image upload, insights, interest / behavior / demographic / geo targeting, page management |
+| **Meta Ads MCP** (Facebook + Instagram) | `https://meta-ads.mcp.pipeboard.co/` | **42 remote tools** — campaigns, ad sets, ads, creatives (incl. dynamic creative testing), image upload, insights, interest / behavior / demographic / geo targeting, page management |
 | **Google Ads MCP** | `https://google-ads.mcp.pipeboard.co/` | **59 tools** — campaigns, ad groups, responsive search ads, Performance Max, keywords, GAQL queries, extensions (sitelinks, callouts, structured snippets), audiences, asset uploads, generic mutate |
 | **TikTok Ads MCP** | `https://tiktok-ads.mcp.pipeboard.co/` | **59 tools** — campaigns, ad groups, ads, identities, image and video upload, audience and creative management, insights |
 | **Snap Ads MCP** | `https://snap-ads.mcp.pipeboard.co/` | **37 tools** — ad accounts, campaigns, ad squads, ads, creatives, media upload, insights |
 | **Reddit Ads MCP** | `https://reddit-ads.mcp.pipeboard.co/` | **33 tools** — accounts, campaigns, ad groups, ads, performance reports |
 
 **That is 230+ tools across five ad platforms behind one auth.** Plug any of these URLs into Claude, Cursor, ChatGPT, Perplexity, or any MCP-compatible client. Connect your ad accounts once at [pipeboard.co](https://pipeboard.co) and every client gets access.
+
+The self-hosted checkout documented in this repository currently registers 50
+local MCP tools, including the v26 lead-campaign and Instant Form tools. The
+remote surface count above is maintained independently from this checkout.
 
 ### Pipeboard CLI — the same tools, in your shell
 
@@ -308,7 +312,7 @@ For advanced users who need to self-host, the package can be installed from sour
      - `daily_budget`: Daily budget in account currency (in cents) as a string
      - `lifetime_budget`: Lifetime budget in account currency (in cents) as a string
      - `targeting`: Targeting specifications (e.g., age, location, interests)
-     - `optimization_goal`: Conversion optimization goal (e.g., 'LINK_CLICKS')
+     - `optimization_goal`: Conversion optimization goal (e.g., 'LINK_CLICKS' for traffic or 'QUALITY_LEAD' for instant-form leads)
      - `billing_event`: How you're charged (e.g., 'IMPRESSIONS')
      - `bid_amount`: Bid amount in cents. Required for LOWEST_COST_WITH_BID_CAP, COST_CAP, TARGET_COST.
      - `bid_strategy`: Bid strategy (e.g., 'LOWEST_COST_WITHOUT_CAP', 'LOWEST_COST_WITH_MIN_ROAS')
@@ -396,6 +400,49 @@ For advanced users who need to self-host, the package can be installed from sour
       - `name`: Optional name for the image
       - `access_token` (optional): Meta API access token
     - Returns: JSON response with image details including hash
+
+### Lead campaigns and Instant Forms (Graph API v26)
+
+Lead campaigns use `OUTCOME_LEADS` and are created `PAUSED` by default. The MCP
+does not invent a budget, country, or audience. For lead ad sets, provide
+`targeting.geo_locations` and explicitly choose
+`targeting.targeting_automation.advantage_audience` (`1` for Advantage+
+Audience, `0` for manual targeting).
+
+For Meta v26 Instant Forms, provide a privacy policy and a
+`follow_up_action_url` (for example, `https://example.com/thank-you`). Use the
+question type `PHONE` for phone numbers; `PHONE_NUMBER` is not a valid v26
+question type. Forms are Page-scoped and require the Page's Lead Ads Terms to
+be accepted before they can be used in delivery.
+
+Available lead tools:
+
+- `get_leadgen_eligibility`: checks whether the Page accepted Lead Generation Terms.
+- `get_lead_forms` / `get_lead_form`: list and inspect Page-scoped Instant Forms.
+- `create_lead_form`: creates forms with questions, privacy policy, disclaimer,
+  thank-you page, quality optimization, SMS verification, work-email enforcement,
+  tracking parameters, AI-agent flag, and optional gated PDF.
+- `update_lead_form` / `archive_lead_form`: manage the supported form status.
+- `get_leads` / `get_ad_leads`: retrieve submissions with pagination.
+- `create_test_lead`: sends a synthetic test submission.
+- `subscribe_page_leadgen_webhook` / `unsubscribe_page_leadgen_webhook`: manage
+  the Page `leadgen` webhook subscription.
+- `validate_lead_campaign_configuration`: checks the destination/optimization
+  combination locally before a write.
+
+Supported, validated lead destinations include Instant Forms (`ON_AD`), website,
+WhatsApp, Instagram Direct, and calls. Meta discontinued third-party creation of
+Click-to-Messenger Lead Generation ads; the validator directs those campaigns to
+Ads Manager instead of sending a request that Meta will reject.
+
+Use `validate_only=true` on campaign, ad-set, creative, and ad creation to ask
+Meta to validate the payload without creating the object. Actual HTTP writes also
+require `X-META-WRITE-CONFIRMATION` with the exact tool name.
+
+The built-in OAuth requests `ads_management`, Page-management, and
+`leads_retrieval` permissions. Meta app review, Lead Access Manager assignments,
+asset access, and acceptance of Lead Generation Terms are still required; asking
+for a permission does not grant it.
 
 ### Video uploads (`upload_ad_video`)
 

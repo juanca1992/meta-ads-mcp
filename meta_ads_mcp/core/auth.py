@@ -22,9 +22,18 @@ from .callback_server import (
 )
 
 # Auth constants
-# Scope includes pages_show_list and pages_read_engagement to fix issue #16
-# where get_account_pages failed for regular users due to missing page permissions
-AUTH_SCOPE = "business_management,public_profile,pages_show_list,pages_read_engagement"
+# Permissions required by the tools exposed by this server. Meta still applies
+# app-review and asset-level access checks; requesting a scope does not grant it.
+AUTH_SCOPE = ",".join((
+    "ads_management",
+    "business_management",
+    "public_profile",
+    "pages_show_list",
+    "pages_read_engagement",
+    "pages_manage_ads",
+    "pages_manage_metadata",
+    "leads_retrieval",
+))
 AUTH_REDIRECT_URI = "http://localhost:8888/callback"
 AUTH_RESPONSE_TYPE = "code"
 
@@ -232,7 +241,7 @@ class AuthManager:
         from urllib.parse import urlencode
         from .callback_server import begin_oauth_flow
         state = begin_oauth_flow(self.redirect_uri)
-        return "https://www.facebook.com/v24.0/dialog/oauth?" + urlencode({
+        return "https://www.facebook.com/v26.0/dialog/oauth?" + urlencode({
             "client_id": self.app_id, "redirect_uri": self.redirect_uri,
             "scope": AUTH_SCOPE, "response_type": AUTH_RESPONSE_TYPE, "state": state,
         })
@@ -375,7 +384,7 @@ def exchange_authorization_code(code, redirect_uri):
     if not secret:
         return None
     try:
-        response = requests.get("https://graph.facebook.com/v24.0/oauth/access_token", params={
+        response = requests.get("https://graph.facebook.com/v26.0/oauth/access_token", params={
             "client_id": meta_config.get_app_id(), "client_secret": secret,
             "redirect_uri": redirect_uri, "code": code,
         }, timeout=30)
@@ -413,7 +422,7 @@ def exchange_token_for_long_lived(short_lived_token):
             return None
             
         # Make the API request to exchange the token
-        url = "https://graph.facebook.com/v24.0/oauth/access_token"
+        url = "https://graph.facebook.com/v26.0/oauth/access_token"
         params = {
             "grant_type": "fb_exchange_token",
             "client_id": app_id,

@@ -24,6 +24,9 @@ _MUTATING_TOOLS = frozenset({
     "create_ad", "update_ad",
     "upload_ad_image", "upload_ad_video", "create_ad_creative", "update_ad_creative",
     "create_budget_schedule",
+    "create_lead_form", "update_lead_form", "archive_lead_form",
+    "create_test_lead", "subscribe_page_leadgen_webhook",
+    "unsubscribe_page_leadgen_webhook",
     "duplicate_campaign", "duplicate_adset", "duplicate_ad", "duplicate_creative",
 })
 
