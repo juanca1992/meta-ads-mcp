@@ -217,3 +217,31 @@ class TestMakeApiRequestHttpErrors:
 
         assert "is_account_disabled" not in result["error"]
         mock_inv.assert_called_once()
+
+
+class TestPermissionErrorsKeepToken:
+    """Codes 10/200 are permission errors (e.g. a non-whitelisted field): the
+    token is still valid and the local cache must not be wiped."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("code, message", [
+        (10, "(#10) The ad account and app id must be whitelisted"),
+        (200, "(#200) Requires ads_management permission"),
+    ])
+    async def test_permission_error_does_not_invalidate(self, code, message):
+        body = {"error": {"message": message, "type": "OAuthException", "code": code}}
+        http_err = _build_http_error(400, body)
+
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=False)
+        client.get = AsyncMock(side_effect=http_err)
+
+        with patch.object(api_module.auth_manager, "invalidate_token") as mock_inv, \
+                patch.object(api_module, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient = MagicMock(return_value=client)
+            mock_httpx.HTTPStatusError = httpx.HTTPStatusError
+            result = await make_api_request("act_123/adsets", "tok")
+
+        assert "error" in result
+        mock_inv.assert_not_called()

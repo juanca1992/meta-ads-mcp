@@ -359,7 +359,7 @@ For advanced users who need to self-host, the package can be installed from sour
     - Returns: Creative details including text, images, and URLs
 
 14. `mcp_meta_ads_create_ad_creative`
-    - Create a new ad creative using an uploaded image hash
+    - Create a new image, video, dynamic, or deterministic carousel ad creative
     - Inputs:
       - `account_id`: Meta Ads account ID (format: act_XXXXXXXXX)
       - `name`: Creative name
@@ -371,6 +371,14 @@ For advanced users who need to self-host, the package can be installed from sour
       - `headlines`: List of headlines for dynamic creative testing (cannot be used with headline)
       - `description`: Single description for simple ads (cannot be used with descriptions)
       - `descriptions`: List of descriptions for dynamic creative testing (cannot be used with description)
+      - `carousel_cards`: Ordered list of 2--10 cards for a carousel. Each card requires exactly
+        one `image_hash` or `video_id`, a `headline` (or `name`), and optionally its own
+        `link_url`/`link` and `description`. Video cards take an optional `thumbnail_url` or
+        `thumbnail_hash` (auto-fetched from the video otherwise). Card order is preserved
+        (`multi_share_optimized` is disabled). `link_url` at the creative level is required as
+        the fallback destination; `call_to_action_type` is shared by the carousel. Carousel
+        creatives use website destinations; Meta Graph API v26 rejects instant-form
+        (`lead_gen_form_id`) CTAs for this child-attachment format.
       - `dynamic_creative_spec`: Dynamic creative optimization settings
       - `call_to_action_type`: CTA button type (e.g., 'LEARN_MORE')
       - `instagram_actor_id`: Optional Instagram account ID

@@ -1822,6 +1822,7 @@ async def create_ad_creative(
     description: Optional[str] = None,
     descriptions: Optional[List[Union[str, Dict[str, Any]]]] = None,
     image_hashes: Optional[List[str]] = None,
+    carousel_cards: Optional[List[Dict[str, Any]]] = None,
     video_id: Optional[Union[str, int]] = None,
     thumbnail_url: Optional[str] = None,
     optimization_type: Optional[str] = None,
@@ -1852,13 +1853,15 @@ async def create_ad_creative(
     validate_only: bool = False,
 ) -> str:
     """
-    Create a new ad creative using an uploaded image hash, video ID, or an existing post.
+    Create a new ad creative using uploaded media, a carousel, or an existing post.
 
     Supports six creative modes:
     - **Existing post**: Provide object_story_id (format: {page_id}_{post_id}) to promote an existing
       organic or published post. No image_hash or video_id required. Optionally combine with
       asset_customization_rules to attach a 9:16 video for Story/Reels placements.
     - **Simple image/video**: Single image_hash or video_id with object_story_spec
+    - **Carousel**: 2--10 ordered cards, each with an image_hash or video_id and its own
+      destination URL, headline, and optional description. The CTA is shared by the ad.
     - **Multi-variant copy**: Use plural text params (messages[], headlines[], descriptions[]) to test
       multiple text variants with a single image/video. No optimization_type or is_dynamic_creative needed.
     - **Placement Asset Customization (dual-aspect, non-DC)**: Serve different aspect ratios per placement
@@ -1905,6 +1908,20 @@ async def create_ad_creative(
                      asset_feed_spec, but Meta silently collapses to a single image at serving time.
                      Use image_hashes with multiple entries only in non-DOF (regular dynamic creative)
                      mode. In DOF mode, pass a single hash.
+        carousel_cards: Ordered carousel cards (2 to 10). Each card must include exactly one of
+                       `image_hash` or `video_id`, plus `link_url` (or `link`; defaults to the
+                       creative's link_url), `headline` (or `name`), and optional `description`.
+                       Video cards also need a thumbnail: pass `thumbnail_url` or `thumbnail_hash`,
+                       otherwise it is auto-fetched from the video. Card order is kept as given
+                       (multi_share_optimized is disabled). Use per-card headlines, not headline/description.
+                       Example: [{"image_hash": "hash_1", "link_url": "https://example.com/a",
+                       "headline": "Product A"}, {"image_hash": "hash_2",
+                       "link_url": "https://example.com/b", "headline": "Product B"}].
+                       Carousel cards cannot be combined with single-media, dynamic/FLEX, existing-post,
+                       or placement-customization parameters. `call_to_action_type` applies to the
+                       whole carousel, while each card keeps its own URL and headline. Carousel
+                       creatives currently support website destinations only: Meta Graph API v26
+                       rejects a `lead_gen_form_id` CTA on child_attachments.
         video_id: Meta video ID for video creatives (cannot be used with image_hash or image_hashes).
                   Upload a video first via the Meta API, then use the returned video ID here.
                   IMPORTANT: When also providing instagram_actor_id, both instagram_actor_id AND
@@ -2145,6 +2162,14 @@ async def create_ad_creative(
         except (json.JSONDecodeError, TypeError):
             pass
 
+    if isinstance(carousel_cards, str):
+        try:
+            _parsed = json.loads(carousel_cards)
+            if isinstance(_parsed, list):
+                carousel_cards = _parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+
     if isinstance(facebook_branded_content, str):
         try:
             _parsed = json.loads(facebook_branded_content)
@@ -2199,12 +2224,99 @@ async def create_ad_creative(
 
     # Validate media mutual exclusivity: exactly one media source allowed
     # (object_story_id is an alternative media source — it references an existing post)
-    media_params = sum(1 for x in [image_hash, image_hashes, video_id, videos, images] if x)
+    media_params = sum(
+        1 for x in [image_hash, image_hashes, video_id, videos, images, carousel_cards] if x
+    )
     if media_params > 1:
-        return json.dumps({"error": "Only one media source allowed. Use 'image_hash' for a single image, 'image_hashes' for multiple images, 'video_id' for a single video, 'videos' for multiple videos with placement labels, or 'images' for multiple images with placement labels."}, indent=2)
+        return json.dumps({"error": "Only one media source allowed. Use 'image_hash' for a single image, 'image_hashes' for multiple images, 'carousel_cards' for a carousel, 'video_id' for a single video, 'videos' for multiple videos with placement labels, or 'images' for multiple images with placement labels."}, indent=2)
 
     if media_params == 0 and not object_story_id:
-        return json.dumps({"error": "No media provided. Specify 'image_hash', 'image_hashes', 'video_id', 'videos', 'images', or 'object_story_id'."}, indent=2)
+        return json.dumps({"error": "No media provided. Specify 'image_hash', 'image_hashes', 'carousel_cards', 'video_id', 'videos', 'images', or 'object_story_id'."}, indent=2)
+
+    # Carousel is rendered through object_story_spec.link_data.child_attachments,
+    # not through asset_feed_spec. Keep it isolated from dynamic/FLEX and
+    # placement-customization modes so Meta cannot reinterpret it as a flexible ad.
+    normalized_carousel_cards: Optional[List[Dict[str, Any]]] = None
+    if carousel_cards:
+        incompatible_carousel_params = {
+            "object_story_id": object_story_id,
+            "optimization_type": optimization_type,
+            "dynamic_creative_spec": dynamic_creative_spec,
+            "asset_customization_rules": asset_customization_rules,
+            "headline": headline,
+            "description": description,
+            "messages": messages,
+            "headlines": headlines,
+            "descriptions": descriptions,
+            "image_crops": image_crops,
+            "reminder_data": reminder_data,
+            "lead_gen_form_id": lead_gen_form_id,
+        }
+        incompatible = [key for key, value in incompatible_carousel_params.items() if value]
+        if incompatible:
+            return json.dumps({
+                "error": "carousel_cards cannot be combined with " + ", ".join(incompatible),
+                "suggestion": "Use per-card headline/description/link_url fields and a single shared website call_to_action_type.",
+            }, indent=2)
+        if not isinstance(carousel_cards, list) or not 2 <= len(carousel_cards) <= 10:
+            return json.dumps({
+                "error": "carousel_cards must contain between 2 and 10 cards.",
+            }, indent=2)
+        if not link_url:
+            return json.dumps({
+                "error": "link_url is required for carousel creatives and is used as the fallback card destination.",
+            }, indent=2)
+
+        normalized_carousel_cards = []
+        for index, card in enumerate(carousel_cards, start=1):
+            if not isinstance(card, dict):
+                return json.dumps({"error": f"Carousel card {index} must be an object."}, indent=2)
+            card_image_hash = card.get("image_hash") or card.get("hash")
+            card_video_id = card.get("video_id")
+            if bool(card_image_hash) == bool(card_video_id):
+                return json.dumps({
+                    "error": f"Carousel card {index} must include exactly one of image_hash or video_id.",
+                }, indent=2)
+            card_link = card.get("link_url") or card.get("link") or link_url
+            card_headline = card.get("headline") or card.get("name")
+            if not card_link:
+                return json.dumps({"error": f"Carousel card {index} requires link_url (or link)."}, indent=2)
+            if not card_headline:
+                return json.dumps({"error": f"Carousel card {index} requires headline (or name)."}, indent=2)
+
+            normalized_card: Dict[str, Any] = {
+                "link": str(card_link),
+                "name": str(card_headline),
+            }
+            if card_image_hash:
+                normalized_card["image_hash"] = str(card_image_hash)
+            else:
+                normalized_card["video_id"] = str(card_video_id)
+                # Meta requires a picture or image_hash on video child attachments
+                # (error subcode 1443052). Reuse the single-video auto-fetch logic.
+                card_thumbnail_hash = card.get("thumbnail_hash")
+                card_thumbnail_url = card.get("thumbnail_url") or card.get("picture")
+                if card_thumbnail_hash:
+                    normalized_card["image_hash"] = str(card_thumbnail_hash)
+                elif card_thumbnail_url:
+                    normalized_card["picture"] = str(card_thumbnail_url)
+                else:
+                    fetched, video_status = await _fetch_video_thumbnail_with_status(
+                        str(card_video_id), access_token
+                    )
+                    if not fetched:
+                        return json.dumps({
+                            "error": f"Carousel card {index}: no thumbnail available for video {card_video_id}.",
+                            "video_status": video_status,
+                            "suggestions": [
+                                "Wait for Meta to finish processing the video, then retry.",
+                                "Or pass thumbnail_url or thumbnail_hash on the card.",
+                            ],
+                        }, indent=2)
+                    normalized_card["picture"] = fetched
+            if card.get("description"):
+                normalized_card["description"] = str(card["description"])
+            normalized_carousel_cards.append(normalized_card)
 
     # Validate image_hashes limits
     if image_hashes:
@@ -2393,7 +2505,38 @@ async def create_ad_creative(
             else:
                 logger.warning(f"Could not auto-fetch thumbnail for video {video_id}")
 
-        if object_story_id:
+        if normalized_carousel_cards:
+            # A carousel is an ordered collection of link_data.child_attachments.
+            # Do not route it through asset_feed_spec: that creates a dynamic/flexible
+            # creative where Meta is free to choose assets and order, rather than a
+            # deterministic carousel.
+            carousel_link_data: Dict[str, Any] = {
+                "link": link_url,
+                "child_attachments": normalized_carousel_cards,
+                # Meta reorders cards by performance unless this is disabled.
+                "multi_share_optimized": False,
+            }
+            if message:
+                carousel_link_data["message"] = message
+            if call_to_action_type:
+                carousel_cta: Dict[str, Any] = {"type": call_to_action_type}
+                carousel_cta_value: Dict[str, Any] = {}
+                if phone_number:
+                    carousel_cta_value["link"] = f"tel:{phone_number}"
+                else:
+                    carousel_cta_value["link"] = link_url
+                carousel_cta["value"] = carousel_cta_value
+                carousel_link_data["call_to_action"] = carousel_cta
+            creative_data["object_story_spec"] = {
+                "page_id": page_id,
+                "link_data": carousel_link_data,
+            }
+            # Meta identifies a link-data carousel as a SHARE object. Without this
+            # explicit type, Graph v26 can return a generic code-1/HTTP-500 error
+            # instead of a useful validation message for child_attachments.
+            creative_data["object_type"] = "SHARE"
+
+        elif object_story_id:
             # ---------------------------------------------------------------------------
             # Existing-post (object_story_id) path: promote an organic/published post
             # ---------------------------------------------------------------------------
@@ -3645,5 +3788,3 @@ async def get_account_pages(account_id: str, access_token: Optional[str] = None)
             "error": "Failed to get account pages",
             "details": str(e)
         }, indent=2)
-
-

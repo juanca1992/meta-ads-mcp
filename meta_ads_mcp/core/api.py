@@ -375,8 +375,13 @@ async def make_api_request(
                         f"Account/action policy block (code={error_code}, subcode={error_subcode}). "
                         f"Token is still valid — NOT invalidating."
                     )
-                elif error_code in [190, 102, 200, 10]:
-                    logger.warning(f"Detected Facebook API auth error: {error_code}")
+                elif error_code in [200, 10]:
+                    # Permission errors (e.g. a field the app/account is not
+                    # whitelisted for). The token is still valid — NOT invalidating.
+                    logger.warning(
+                        f"Facebook API permission error (code={error_code}): "
+                        f"{error_obj.get('message', 'N/A')}. Token is still valid — NOT invalidating."
+                    )
                     if error_code == 200 and "Provide valid app ID" in error_obj.get("message", ""):
                         logger.error("Meta API authentication configuration issue")
                         logger.error(f"Current app_id: {app_id}")
@@ -387,6 +392,8 @@ async def make_api_request(
                                 "code": error_code
                             }
                         }
+                elif error_code in [190, 102]:
+                    logger.warning(f"Detected Facebook API auth error: {error_code}")
                     _invalidate_local_auth()
                 elif e.response.status_code in [401, 403]:
                     logger.warning(f"Detected authentication error ({e.response.status_code})")

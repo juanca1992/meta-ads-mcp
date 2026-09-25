@@ -93,14 +93,14 @@ async def get_adsets(account_id: str, access_token: Optional[str] = None, limit:
     if campaign_id:
         endpoint = f"{campaign_id}/adsets"
         params = {
-            "fields": "id,name,campaign_id,status,daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,is_dynamic_creative,frequency_control_specs{event,interval_days,max_frequency},regional_regulated_categories,regional_regulation_identities,automatic_manual_state,is_incremental_attribution_enabled,placement_soft_opt_out,full_funnel_exploration_mode,optimization_sub_event,cost_bidding_mode,existing_customer_budget_percentage,multi_optimization_goal_weight,is_budget_schedule_enabled",
+            "fields": "id,name,campaign_id,status,daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,is_dynamic_creative,frequency_control_specs{event,interval_days,max_frequency},regional_regulated_categories,regional_regulation_identities,automatic_manual_state,is_incremental_attribution_enabled,placement_soft_opt_out,optimization_sub_event,existing_customer_budget_percentage,multi_optimization_goal_weight,is_budget_schedule_enabled",
             "limit": limit
         }
     else:
         # Use account endpoint if no campaign_id is given
         endpoint = f"{account_id}/adsets"
         params = {
-            "fields": "id,name,campaign_id,status,daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,is_dynamic_creative,frequency_control_specs{event,interval_days,max_frequency},regional_regulated_categories,regional_regulation_identities,automatic_manual_state,is_incremental_attribution_enabled,placement_soft_opt_out,full_funnel_exploration_mode,optimization_sub_event,cost_bidding_mode,existing_customer_budget_percentage,multi_optimization_goal_weight,is_budget_schedule_enabled",
+            "fields": "id,name,campaign_id,status,daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,is_dynamic_creative,frequency_control_specs{event,interval_days,max_frequency},regional_regulated_categories,regional_regulation_identities,automatic_manual_state,is_incremental_attribution_enabled,placement_soft_opt_out,optimization_sub_event,existing_customer_budget_percentage,multi_optimization_goal_weight,is_budget_schedule_enabled",
             "limit": limit
         }
         # Note: Removed the attempt to add campaign_id to params for the account endpoint case, 
@@ -133,7 +133,7 @@ async def get_adset_details(adset_id: str, access_token: Optional[str] = None) -
     endpoint = f"{adset_id}"
     # Explicitly prioritize frequency_control_specs in the fields request
     params = {
-        "fields": "id,name,campaign_id,status,frequency_control_specs{event,interval_days,max_frequency},daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,attribution_spec,destination_type,promoted_object,pacing_type,budget_remaining,dsa_beneficiary,dsa_payor,is_dynamic_creative,regional_regulated_categories,regional_regulation_identities,automatic_manual_state,is_incremental_attribution_enabled,placement_soft_opt_out,full_funnel_exploration_mode,optimization_sub_event,cost_bidding_mode,existing_customer_budget_percentage,multi_optimization_goal_weight,is_budget_schedule_enabled"
+        "fields": "id,name,campaign_id,status,frequency_control_specs{event,interval_days,max_frequency},daily_budget,lifetime_budget,targeting,bid_amount,bid_adjustments,bid_strategy,bid_constraints,optimization_goal,billing_event,start_time,end_time,created_time,updated_time,attribution_spec,destination_type,promoted_object,pacing_type,budget_remaining,dsa_beneficiary,dsa_payor,is_dynamic_creative,regional_regulated_categories,regional_regulation_identities,automatic_manual_state,is_incremental_attribution_enabled,placement_soft_opt_out,optimization_sub_event,existing_customer_budget_percentage,multi_optimization_goal_weight,is_budget_schedule_enabled"
     }
     
     data = await make_api_request(endpoint, access_token, params)
