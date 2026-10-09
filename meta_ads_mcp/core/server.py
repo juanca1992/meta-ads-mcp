@@ -9,15 +9,10 @@ import sys
 import json
 from typing import Dict, Any, Optional
 from .auth import login as login_auth
-from .resources import list_resources, get_resource
 from .utils import logger
 
 # Initialize FastMCP server
 mcp_server = FastMCP("meta-ads")
-
-# Register resource URIs
-mcp_server.resource(uri="meta-ads://resources")(list_resources)
-mcp_server.resource(uri="meta-ads://images/{resource_id}")(get_resource)
 
 
 class StreamableHTTPHandler:
@@ -324,7 +319,7 @@ def main():
         # Import all tool modules to ensure they are registered
         logger.info("Ensuring all tools are registered for HTTP transport")
         from . import accounts, campaigns, adsets, ads, insights, authentication
-        from . import ads_library, budget_schedules, reports, openai_deep_research, leadgen
+        from . import ads_library, budget_schedules, reports, leadgen
         
         # ✅ NEW: Setup HTTP authentication middleware
         logger.info("Setting up HTTP authentication middleware")

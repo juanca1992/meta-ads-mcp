@@ -15,7 +15,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from meta_ads_mcp.core import ads, api, auth, callback_server, openai_deep_research as research
+from meta_ads_mcp.core import ads, api, auth, callback_server
 from meta_ads_mcp.core import server as server_module
 from meta_ads_mcp.core.http_auth_integration import AuthInjectionMiddleware, setup_fastmcp_http_auth
 from meta_ads_mcp.core.security import open_upload_file
@@ -82,25 +82,6 @@ async def test_global_request_concurrency_is_bounded():
         finally:
             release.set()
             await asyncio.gather(first, second)
-
-
-@pytest.mark.asyncio
-async def test_fetch_isolated_expiring_and_permission_checked(monkeypatch):
-    manager = research.MetaAdsDataManager()
-    manager._store('owner', 'account:act_123', {'id':'account:act_123','type':'account','text':'private'})
-    monkeypatch.setattr(research, '_data_manager', manager)
-    with patch.object(research, 'make_api_request', AsyncMock(return_value={'id':'act_123'})) as graph:
-        assert 'private' not in await research.fetch(id='account:act_123', access_token='attacker')
-        graph.assert_not_awaited()
-        assert 'private' in await research.fetch(id='account:act_123', access_token='owner')
-        graph.return_value = {'error': {'code':190}}
-        assert 'private' not in await research.fetch(id='account:act_123', access_token='owner')
-    with patch.object(research.time, 'monotonic', return_value=10**20):
-        assert manager.fetch_record('account:act_123', 'owner') is None
-    manager.cache_limit = 2
-    for i in range(3):
-        manager._store('owner', str(i), {'type':'account'})
-    assert len(manager._cache) == 2
 
 
 def test_http_local_upload_blocked_before_file_open(tmp_path, monkeypatch):
@@ -300,31 +281,6 @@ def test_log_redaction_covers_raw_oauth_query_and_mapping(caplog):
         logging.getLogger('thirdparty').info("Payload %s", {'access_token':'token123'})
     for value in ('secret123','code123','state123','token123'):
         assert value not in caplog.text
-
-
-def test_real_mcp_fetch_respects_http_identity_and_host(monkeypatch):
-    from mcp.server.fastmcp import FastMCP
-    from mcp.server.transport_security import TransportSecuritySettings
-    mcp = FastMCP('security-integration')
-    mcp.settings.stateless_http = True
-    mcp.settings.json_response = True
-    mcp.settings.transport_security = TransportSecuritySettings(
-        enable_dns_rebinding_protection=True, allowed_hosts=['testserver'], allowed_origins=[])
-    mcp.tool()(research.fetch)
-    setup_fastmcp_http_auth(mcp)
-    manager = research.MetaAdsDataManager()
-    manager._store('owner', 'account:act_123', {'id':'account:act_123','type':'account','text':'private-record'})
-    monkeypatch.setattr(research, '_data_manager', manager)
-    headers = {'Authorization':'Bearer attacker', 'Accept':'application/json, text/event-stream'}
-    call = {'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'fetch','arguments':{'id':'account:act_123'}}}
-    with patch.object(research, 'make_api_request', AsyncMock(return_value={'id':'act_123'})):
-        with TestClient(mcp.streamable_http_app()) as client:
-            response = client.post('/mcp', headers=headers, json=call)
-            assert response.status_code == 200 and 'private-record' not in response.text
-            response = client.post('/mcp', headers={**headers, 'Authorization':'Bearer owner'}, json=call)
-            assert response.status_code == 200 and 'private-record' in response.text
-            response = client.post('/mcp', headers={**headers, 'Host':'attacker.example'}, json=call)
-            assert response.status_code == 421 and 'private-record' not in response.text
 
 
 @pytest.mark.asyncio

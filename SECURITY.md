@@ -209,3 +209,323 @@ rejects unauthenticated requests in both JSON and `--sse-response` modes.
   Meta access token (`https://developers.facebook.com/tools/debug/accesstoken/`)
   and review Graph API access logs for unexpected calls.
 - Credited to zx (Jace) — GitHub [@manus-use](https://github.com/manus-use).
+
+### GHSA-6v2r-2m4r-768m — Reflected XSS in the local OAuth callback server error page
+
+- **Severity:** Medium
+- **Affected versions:** `<= 1.0.120` when the local OAuth login flow is used
+  (the callback server listens on `127.0.0.1:8080-8089`).
+- **Fixed in:** `1.0.121`
+- **Affected configurations:** Anyone completing an interactive OAuth login on
+  a desktop where a browser can reach `localhost` during the 180-second
+  authorization window. The hosted MCP at `*.mcp.pipeboard.co` does not run the
+  local callback server.
+
+**What went wrong.** The callback server interpolated the `error` query
+parameter straight into its HTML error page, so a page open in the user's
+browser could navigate to the callback URL with script in `error` and execute
+it on the `localhost` origin. The server also exposed an unauthenticated
+`/token` endpoint that returned the stored OAuth authorization code to any
+same-origin page — the escalation target for the XSS above.
+
+**Fix.**
+1. The `error` value is HTML-escaped (and truncated) before being reflected.
+2. Every callback response now carries `Content-Security-Policy: default-src
+   'none'`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+   `Referrer-Policy: no-referrer` and `Cache-Control: no-store`; the success
+   page's inline script runs under a per-response nonce.
+3. The unreferenced `/token` endpoint was removed.
+
+**Action for operators.**
+- Upgrade to `1.0.121` or later.
+- If you completed an OAuth login on a machine where an untrusted page may have
+  been open, reconnect the Meta account so a fresh token is issued.
+- Credited to zx — GitHub [@manus-pi](https://github.com/manus-pi).
+
+### GHSA-j7p8-g5m6-3wv5 — `search`/`fetch` deep-research tools returned one caller's cached records to another
+
+- **Severity:** High (CVSS 3.1 7.5 — `AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N`)
+- **Affected versions:** `>= 0.6.0, <= 1.0.121` when run with
+  `--transport streamable-http` and serving more than one caller from one
+  process.
+- **Fixed in:** `1.0.122`
+- **Affected configurations:** Multi-caller deployments only. The default stdio
+  transport, and any deployment where a process serves a single caller, has no
+  cross-caller boundary to cross. The hosted MCP at `*.mcp.pipeboard.co`
+  intercepts `search` and answers it with its own implementation, so the Python
+  cache was never populated there and `fetch` had nothing to return — measured
+  over production traffic, every hosted `fetch` call returned "Record not found"
+  or a schema-validation error.
+
+**What went wrong.** `openai_deep_research.py` cached Meta Ads records in a
+module-level `MetaAdsDataManager` singleton, keyed only by `"<type>:<id>"` with
+no caller, session or tenant component. `search` populated that cache under the
+calling user's credential; `fetch` read it back with no credential resolution
+and no ownership check, so any caller who knew (or guessed) a record id could
+read another caller's cached ad-account, campaign, ad, page or business records
+— including account name, currency, total spend, balance and the raw Graph
+objects. `fetch` never called the Graph API, so nothing downstream validated
+the reader's token either; the HTTP auth gate gets a request past on any
+non-empty bearer token, which is enough for every other tool because Graph
+rejects a bad token, but not for a tool that answers from local state.
+
+**Fix.** The `search` and `fetch` tools and the module that backed them were
+removed outright. They had no working use left to preserve, so scoping the
+cache per caller would have kept the machinery without the benefit.
+
+**Action for operators.**
+- Upgrade to `1.0.122` or later.
+- If you ran an earlier version as a shared multi-caller service, treat the
+  record types listed above as potentially disclosed to other callers of that
+  process.
+- Clients that relied on the deep-research `search`/`fetch` pair should use the
+  typed tools instead: `get_ad_accounts`, `get_campaigns`,
+  `get_campaign_details`, `get_adsets`, `get_ads`, `get_ad_details`.
+- Credited to [@BarakSrour](https://github.com/BarakSrour).
+
+### GHSA-25fp-988j-w29f — MCP resource interface over a process-global, unscoped image cache
+
+- **Severity:** Low (reported as Medium; see *Reachability* below)
+- **Affected versions:** `<= 1.0.122`
+- **Fixed in:** `1.0.123`
+- **Affected configurations:** Would have applied to multi-caller
+  `--transport streamable-http` deployments. The hosted MCP at
+  `*.mcp.pipeboard.co` does not expose the MCP resources interface to clients.
+
+**What was wrong.** `utils.ad_creative_images` was a module-level dict of ad
+creative images keyed by image hash alone, with no caller, session or tenant
+component and no eviction. Two MCP resources registered on the server read it
+directly: `meta-ads://resources` (`list_resources`) enumerated every entry, and
+`meta-ads://images/{resource_id}` (`get_resource`) returned any entry's raw
+bytes. Neither handler resolved or used the request credential, so the shape of
+the code was a cross-caller read with an enumeration primitive attached.
+
+**Reachability.** No shipped version could populate that cache. The only write
+was `create_resource_from_image()`, which has had no call sites since `0.4.0`
+(July 2025) — `get_ad_image` returns the image directly and never cached it.
+Verified against the running server: `meta-ads://resources` returns
+`{"resources": []}` and every `meta-ads://images/...` read returns
+"Resource not found". No creative image of any caller was ever exposed through
+this interface. The finding is accurate about the code and does not describe a
+disclosure that could occur in practice.
+
+**Fix.** The cache, its writer, the `resources` module and both resource
+registrations were removed. An unscoped global with live readers is one commit
+away from being exploitable the moment a write path returns.
+
+**Action for operators.** None required. Upgrade to `1.0.123` to drop the dead
+interface. Clients that enumerated `meta-ads://resources` (it only ever returned
+an empty list) should use `get_ad_image` / `get_ad_creatives` instead.
+
+- Credited to [@Gal3m](https://github.com/Gal3m) and
+  [@mohammad228](https://github.com/mohammad228).
+
+### GHSA-75j5-qp3x-mx37 — OAuth callback server: reflected XSS, `/token` disclosure, and missing CSRF `state`
+
+- **Severity:** Medium
+- **Affected versions:** `<= 1.0.120` for the XSS and `/token` disclosure;
+  `<= 1.0.123` for the missing `state` check.
+- **Fixed in:** `1.0.121` (XSS, `/token`) and `1.0.124` (`state`, bind address,
+  server lifetime).
+- **Affected configurations:** Installs that run the local OAuth login flow
+  (`--login`, the `get_login_link` tool, or `authenticate()`), which listens on
+  `127.0.0.1:8080-8089` during the authorization window. The hosted MCP at
+  `*.mcp.pipeboard.co` does not run the callback server.
+
+**What went wrong.** Three weaknesses in `callback_server.py` were reported
+together as a credential-theft chain:
+
+1. The `error` query parameter was reflected into the HTML error page without
+   escaping — fixed in `1.0.121`, tracked as GHSA-6v2r-2m4r-768m.
+2. `GET /token` returned the stored OAuth authorization artifact to any
+   same-origin page — the endpoint was removed in `1.0.121`.
+3. `get_auth_url` emitted no `state` parameter and the callback validated none
+   (RFC 6749 §10.12), so a page that could reach the callback server could hand
+   it an authorization code of the attacker's choosing.
+
+**Fix for item 3 (`1.0.124`).** A cryptographically random `state` is minted per
+authorization request, carried in the authorization URL, and required on the
+callback: a code whose `state` is missing, mismatched, or replayed is rejected
+and never stored. The state is single-use. The server now binds `127.0.0.1`
+explicitly rather than whatever `localhost` resolves to, and shuts down as soon
+as it has handled a valid callback instead of idling out the 180-second window.
+
+**On the report's fourth suggestion (random high port).** The callback port
+cannot be randomized: Meta validates the redirect URI against the list
+registered on the app, so the flow only works on pre-registered ports. The
+server stays on `8080-8089` by necessity; the `state` check, not port secrecy,
+is what makes an unsolicited callback useless.
+
+**Action for operators.**
+- Upgrade to `1.0.124` or later.
+- If you completed an interactive login on a machine where an untrusted page may
+  have been open, reconnect the Meta account so a fresh token is issued.
+- Credited to [@Gal3m](https://github.com/Gal3m) and
+  [@mohammad228](https://github.com/mohammad228).
+
+### GHSA-cx77-j6h8-3382 — SSRF guard allowed shared address space (`100.64.0.0/10`)
+
+- **Severity:** Medium
+- **Affected versions:** `>= 1.0.115, <= 1.0.124` — i.e. every version carrying
+  the original SSRF guard.
+- **Fixed in:** `1.0.125`
+- **Affected configurations:** Deployments where non-public services live in
+  `100.64.0.0/10` — GKE and other Kubernetes clusters default pod/service CIDRs
+  into that range, as do cloud internal endpoints and ISP CGNAT — and where a
+  caller can drive `upload_ad_image` or the image-viewing tools (including an
+  agent acting on injected instructions).
+
+**What went wrong.** `validate_public_url` classified a resolved address with a
+category denylist: `is_private or is_loopback or is_link_local or is_reserved or
+is_multicast or is_unspecified`. `100.64.0.0/10` (RFC 6598 shared address space)
+satisfies none of those — it is `is_global == False` but neither private nor
+reserved — so a URL resolving into it passed the guard and was fetched
+server-side, and the redirect re-validation hook allowed redirects that stayed
+inside the range. Loopback, RFC 1918 and link-local (including the cloud
+metadata endpoint) remained blocked, so the exposure was a partial internal-range
+SSRF confined to shared address space.
+
+**Fix.** The guard now tests positively for `ip.is_global` and rejects anything
+else, so non-public ranges no longer have to be enumerated to be blocked. The
+original category checks are kept alongside it, plus an explicit list of
+non-public networks (`100.64.0.0/10`, `192.0.0.0/24`, `198.18.0.0/15`, the RFC
+5737 TEST-NETs, `240.0.0.0/4`, `2001:db8::/32`, `64:ff9b:1::/48`), because
+`is_global`'s backing table has shifted across CPython patch releases. IPv4-mapped
+IPv6 addresses are still unwrapped first, so `::ffff:100.64.1.1` is rejected too.
+
+**Action for operators.**
+- Upgrade to `1.0.125` or later.
+- If you ran an earlier version where `100.64.0.0/10` reaches internal services,
+  review outbound request logs for fetches into that range.
+- Credited to [@Gal3m](https://github.com/Gal3m) and
+  [@mohammad228](https://github.com/mohammad228).
+
+### GHSA-2h5x-4qc8-3x27 — `save_ad_image_locally` wrote to a caller-chosen path
+
+- **Severity:** Medium
+- **Affected versions:** `<= 1.0.125`, and only when the tool is enabled.
+- **Fixed in:** `1.0.126`
+- **Affected configurations:** Installs that set
+  `META_ADS_ENABLE_SAVE_AD_IMAGE_LOCALLY` — the tool is not registered without
+  it. The hosted MCP at `*.mcp.pipeboard.co` does not set it, so the tool has
+  never been exposed there.
+
+**What went wrong.** `save_ad_image_locally` built its destination from two
+caller-supplied tool arguments with no validation:
+
+```python
+filename = f"{ad_id}_{image_hashes[0]}.jpg"
+filepath = os.path.join(output_dir, filename)
+os.makedirs(output_dir)          # built whatever tree was needed
+```
+
+`os.path.join` returns an absolute second argument unchanged and does not
+neutralize `..`, so `output_dir="/etc/cron.d"`, `ad_id="/tmp/PWNED"` or
+`ad_id="../../../../tmp/evil"` all wrote the downloaded image outside the
+intended `ad_images` directory, with the server process's privileges, creating
+directories along the way. The bytes are an ad image, which a caller who
+controls the creative can influence.
+
+**Fix.** A new `resolve_ad_image_save_path()` decides the destination before
+anything touches the disk: `ad_id` must be a Meta object id (digits), the image
+hash must be filename-safe, and `output_dir` is resolved with `os.path.realpath`
+and must land on or under an allowed base directory — so absolute paths, `..`
+and symlinks pointing out of the base are all rejected. The base is the working
+directory the server was started in, which is where the documented default
+(`ad_images`) has always resolved; operators who want images elsewhere set
+`META_ADS_IMAGE_OUTPUT_DIR`. Directories are only created after the path passes.
+
+**Action for operators.**
+- Upgrade to `1.0.126` or later.
+- If you enabled the tool on an earlier version, check for unexpected files
+  matching `*_<hash>.jpg` outside your image directory.
+- Credited to [@Gal3m](https://github.com/Gal3m) and
+  [@mohammad228](https://github.com/mohammad228).
+
+### GHSA-prmg-4fr3-mm6x — cached Meta access token was group/world-readable on disk
+
+- **Severity:** Medium
+- **Affected versions:** `<= 1.0.126`
+- **Fixed in:** `1.0.127`
+- **Affected configurations:** Local installs that authenticate through the
+  OAuth flow and cache a token (`~/.config/meta-ads-mcp/token_cache.json`, or
+  `~/Library/Application Support/meta-ads-mcp/` on macOS). Matters most on
+  shared hosts — CI runners, bastion boxes, multi-UID containers. The hosted MCP
+  at `*.mcp.pipeboard.co` does not cache tokens to disk.
+
+**What went wrong.** The cache file was created with a bare `open(path, "w")`
+and its directory with `mkdir()` with no mode, so under the usual `0022` umask
+the long-lived Meta access token (~60 days) landed in a `0644` file inside a
+`0755` directory. Any other local user could read it and act as the operator
+against the Graph API.
+
+**Fix.** The file is created with `os.open(..., O_CREAT, 0o600)` and the
+directory with mode `0o700`. Because `O_CREAT`'s mode applies only at creation
+and `mkdir`'s mode is masked by the umask (and is a no-op for a directory that
+already exists), both are also narrowed explicitly afterwards — which repairs a
+cache written by an earlier version. The same narrowing runs when a cache is
+loaded, so an existing install stops being readable as soon as the server
+starts, with no need to re-authenticate. On Windows the chmod step is skipped:
+it cannot express "owner only" there, where access is governed by ACLs.
+
+**Action for operators.**
+- Upgrade to `1.0.127` or later; the permissions are repaired on the next load
+  or save.
+- If you ran an earlier version on a shared host, treat the cached token as
+  exposed: rotate it at
+  `https://developers.facebook.com/tools/debug/accesstoken/` and review Graph
+  API access logs.
+- Credited to [@Gal3m](https://github.com/Gal3m) and
+  [@mohammad228](https://github.com/mohammad228).
+
+### GHSA-r3r9-3mrh-x966 — access token written to the debug log via third-party request logging
+
+- **Severity:** Medium
+- **Affected versions:** `<= 1.0.127`
+- **Fixed in:** `1.0.128`
+- **Affected configurations:** Any install that makes Graph API calls. The log
+  file lives at `~/.config/meta-ads-mcp/meta_ads_debug.log`
+  (`~/Library/Application Support/meta-ads-mcp/` on macOS) and is never rotated,
+  so records accumulate indefinitely. It matters most where logs are shipped
+  somewhere else — container stdout collection, a log aggregator, a SIEM — or on
+  a shared host.
+
+**What the report described, and what was still live.** The advisory cites
+`pipeboard_auth.py`, which put `PIPEBOARD_API_TOKEN` in a URL query string and
+logged the full URL. That module was removed in `1.0.121`, and no credential is
+placed in a query string by this package today, so that part no longer applies.
+
+The logging half did still apply, through a different route. `setup_logging()`
+called `logging.basicConfig(level=DEBUG, filename=...)`, which installs a handler
+on the **root** logger — so every third-party record was captured too, including
+httpx's INFO line:
+
+```
+httpx - INFO - HTTP Request: GET https://graph.facebook.com/v24.0/me/adaccounts?access_token=<the operator's token> "HTTP/1.1 200 OK"
+```
+
+The package masks the token in its own request logging, but the Graph API takes
+`access_token` as a query parameter, so httpx logged it in full on every call.
+The file was created at `0644`.
+
+**Fix.**
+1. The file handler is attached to this package's logger with `propagate = False`
+   instead of the root logger, so third-party records are no longer captured.
+2. `httpx` and `httpcore` are held at `WARNING`, so the URL line is not emitted
+   into logging the host application configures either.
+3. The default level is `INFO` rather than `DEBUG`; set `META_ADS_LOG_LEVEL=DEBUG`
+   to restore the old verbosity.
+4. The log file is created `0600` inside a `0700` directory, and both are
+   narrowed on startup if an earlier version left them wider.
+5. Credential prefixes (`token[:10]`) in log lines and in the `get_login_link`
+   response are replaced by `redact_secret()`, which reports the length only. Ten
+   characters is still credential material in a file that is never rotated, and
+   enough to correlate one caller's requests on a shared deployment.
+
+**Action for operators.**
+- Upgrade to `1.0.128` or later.
+- Existing `meta_ads_debug.log` files contain access tokens in full. Delete them,
+  and if the logs were shipped anywhere or the host is shared, rotate the token
+  at `https://developers.facebook.com/tools/debug/accesstoken/`.
+- Credited to [@Gal3m](https://github.com/Gal3m) and
+  [@mohammad228](https://github.com/mohammad228).

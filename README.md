@@ -611,14 +611,6 @@ to upload media to the selected ad account.
       - `limit`: Maximum number of results to return (default: 25)
     - Returns: Location data with key, name, type, and geographic hierarchy information
 
-29. `mcp_meta_ads_search` (Enhanced)
-    - Generic search across accounts, campaigns, ads, and pages
-    - Automatically includes page searching when query mentions "page" or "pages"
-    - Inputs:
-      - `access_token` (optional): Meta API access token (will use cached token if not provided)
-      - `query`: Search query string (e.g., "Injury Payouts pages", "active campaigns")
-    - Returns: List of matching record IDs in ChatGPT-compatible format
-
 ## Licensing
 
 Meta Ads MCP is licensed under the [Business Source License 1.1](LICENSE), which means:

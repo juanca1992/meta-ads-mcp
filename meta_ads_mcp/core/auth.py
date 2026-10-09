@@ -10,7 +10,7 @@ import os
 import webbrowser
 import asyncio
 import json
-from .utils import logger
+from .utils import logger, restrict_permissions
 import requests
 
 # Import from the new callback server module
@@ -93,6 +93,12 @@ class MetaConfig:
 # Create singleton instance
 meta_config = MetaConfig()
 
+# The token cache holds a reusable Meta credential, so it is owner-only.
+# See GHSA-prmg-4fr3-mm6x.
+TOKEN_CACHE_FILE_MODE = 0o600
+TOKEN_CACHE_DIR_MODE = 0o700
+_restrict_permissions = restrict_permissions
+
 class TokenInfo:
     """Stores token information including expiration"""
     def __init__(self, access_token: str, expires_in: Optional[int] = None, user_id: Optional[str] = None):
@@ -153,8 +159,8 @@ class AuthManager:
         # mkdir's mode is affected by umask and does not change existing paths.
         # This directory stores a reusable Meta credential, so enforce it.
         try:
-            cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-            cache_dir.chmod(0o700)
+            cache_dir.mkdir(parents=True, exist_ok=True, mode=TOKEN_CACHE_DIR_MODE)
+            _restrict_permissions(cache_dir, TOKEN_CACHE_DIR_MODE)
         except OSError as exc:
             logger.warning("Could not restrict token cache directory permissions: %s", exc)
         
@@ -166,7 +172,10 @@ class AuthManager:
         
         if not cache_path.exists():
             return False
-        
+
+        # A cache written by an older version may still be world-readable.
+        _restrict_permissions(cache_path, TOKEN_CACHE_FILE_MODE)
+
         try:
             with open(cache_path, "r") as f:
                 data = json.load(f)
@@ -228,10 +237,12 @@ class AuthManager:
         cache_path = self._get_token_cache_path()
         
         try:
-            fd = os.open(cache_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # O_CREAT's mode only applies when the file is created, so an
+            # existing cache from an earlier version is narrowed afterwards.
+            fd = os.open(cache_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, TOKEN_CACHE_FILE_MODE)
             with os.fdopen(fd, "w") as f:
                 json.dump(self.token_info.serialize(), f)
-            cache_path.chmod(0o600)
+            _restrict_permissions(cache_path, TOKEN_CACHE_FILE_MODE)
             logger.info(f"Token cached at: {cache_path}")
         except Exception as e:
             logger.error(f"Error saving token to cache: {e}")

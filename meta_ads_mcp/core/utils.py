@@ -41,6 +41,61 @@ if not using_direct_token:
         print("WARNING: META_APP_SECRET environment variable is not set.", file=sys.stderr)
         print("NOTE: This is only needed to exchange a short-lived token for a long-lived one.", file=sys.stderr)
 
+# The log file sits next to the token cache and records request activity, so it
+# gets the same owner-only treatment. See GHSA-prmg-4fr3-mm6x for the cache.
+LOG_DIR_MODE = 0o700
+LOG_FILE_MODE = 0o600
+
+# Log level default. DEBUG used to be hard-coded, which (together with the root
+# handler below) wrote a great deal of request detail to a file that is never
+# rotated. Operators who need it set META_ADS_LOG_LEVEL=DEBUG.
+DEFAULT_LOG_LEVEL = "INFO"
+
+# httpx logs "HTTP Request: GET <url>" at INFO, and for the Graph API that URL
+# carries `access_token=<the operator's token>` in the query string. The old
+# logging.basicConfig() call installed a handler on the ROOT logger, so those
+# records landed in meta_ads_debug.log in full. The handler is now attached to
+# this package's logger only, and httpx is held at WARNING so the line is not
+# emitted into whatever logging the host application configures either.
+# See GHSA-r3r9-3mrh-x966.
+_URL_LOGGING_LIBRARIES = ("httpx", "httpcore")
+
+
+def restrict_permissions(path: pathlib.Path, mode: int) -> None:
+    """Narrow `path` to `mode` if it is wider, best effort.
+
+    POSIX only: on Windows chmod cannot express "owner only", and access is
+    governed by ACLs instead.
+    """
+    if platform.system() == "Windows":
+        return
+    try:
+        if (path.stat().st_mode & 0o777) != mode:
+            os.chmod(path, mode)
+    except OSError:
+        # Logging is not configured yet when this runs at import time, and a
+        # permissions failure must never stop the server from starting.
+        pass
+
+
+def redact_secret(value: Optional[str]) -> str:
+    """Render a credential for a log line or a tool response.
+
+    Returns the length only. Prefixes (`token[:10]`) were used before, which is
+    still credential material in a file that is never rotated, and long enough
+    to correlate one caller's requests across a shared deployment.
+    """
+    if not value:
+        return "<none>"
+    return f"<redacted:{len(value)} chars>"
+
+
+def _resolve_log_level() -> int:
+    requested = os.environ.get("META_ADS_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
+    level = logging.getLevelName(requested)
+    return level if isinstance(level, int) else logging.INFO
+
+
 # Configure logging to file
 def setup_logging():
     """Set up owner-only file logging, with a safe stderr fallback."""
@@ -54,28 +109,45 @@ def setup_logging():
     
     log_dir = base_path / "meta-ads-mcp"
     log_file = log_dir / "meta_ads_debug.log"
-
     try:
-        log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        log_dir.chmod(0o700)
-        handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
-        log_file.chmod(0o600)
-        logging_destination = str(log_file)
+        log_dir.mkdir(parents=True, exist_ok=True, mode=LOG_DIR_MODE)
+        restrict_permissions(log_dir, LOG_DIR_MODE)
+        # Create the file ourselves so it exists with 0600 before the handler
+        # opens it; narrow it afterwards in case an earlier version left it wider.
+        if not log_file.exists():
+            os.close(os.open(log_file, os.O_CREAT | os.O_WRONLY | os.O_APPEND, LOG_FILE_MODE))
+        restrict_permissions(log_file, LOG_FILE_MODE)
+        log_file_usable = True
     except OSError:
         # Read-only homes and hardened containers should still be able to run.
-        # stderr is safe for HTTP and does not corrupt stdio's stdout channel.
-        handler = logging.StreamHandler(sys.stderr)
-        logging_destination = "stderr (log directory unavailable)"
+        log_file_usable = False
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[handler],
-    )
-    
     # Create a logger
     logger = logging.getLogger("meta-ads-mcp")
-    logger.setLevel(logging.INFO)
+    logger.setLevel(_resolve_log_level())
+
+    # Attach the handler to this logger rather than the root logger, so
+    # third-party records (notably httpx's full request URLs) are not captured.
+    # stderr is the fallback: safe for HTTP and it does not corrupt stdio's
+    # stdout channel.
+    if log_file_usable:
+        handler = logging.FileHandler(str(log_file), mode="a", encoding="utf-8")
+        logging_destination = str(log_file)
+    else:
+        handler = logging.StreamHandler(sys.stderr)
+        logging_destination = "stderr (log directory unavailable)"
+    for old in [h for h in logger.handlers if getattr(h, "_meta_ads_mcp_handler", False)]:
+        old.close()
+        logger.removeHandler(old)
+    handler._meta_ads_mcp_handler = True
+    handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    )
+    logger.addHandler(handler)
+    logger.propagate = False
+
+    for library in _URL_LOGGING_LIBRARIES:
+        logging.getLogger(library).setLevel(logging.WARNING)
     
     # Log startup information
     logger.info("Logging initialized. Destination: %s", logging_destination)
@@ -86,9 +158,6 @@ def setup_logging():
 
 # Create the logger instance to be imported by other modules
 logger = setup_logging()
-
-# Global store for ad creative images
-ad_creative_images = {}
 
 
 def extract_creative_image_urls(creative: Dict[str, Any]) -> List[str]:
@@ -177,27 +246,54 @@ class BlockedURLError(Exception):
 
 _ALLOWED_URL_SCHEMES = ("http", "https")
 
+# Non-public ranges named explicitly, because `is_global`'s backing table has
+# changed across CPython patch releases and a category denylist alone missed
+# them (GHSA-cx77-j6h8-3382: 100.64.0.0/10 is neither private nor reserved, so
+# it passed the original check while hosting internal services on the
+# deployments that use it — GKE pod/service CIDRs, cloud internal endpoints,
+# ISP CGNAT).
+_BLOCKED_NETWORKS = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in (
+        "100.64.0.0/10",     # RFC 6598 shared address space (CGNAT)
+        "192.0.0.0/24",      # RFC 6890 IETF protocol assignments
+        "192.0.2.0/24",      # RFC 5737 TEST-NET-1
+        "198.18.0.0/15",     # RFC 2544 benchmarking
+        "198.51.100.0/24",   # RFC 5737 TEST-NET-2
+        "203.0.113.0/24",    # RFC 5737 TEST-NET-3
+        "240.0.0.0/4",       # RFC 1112 reserved, incl. 255.255.255.255
+        "2001:db8::/32",     # RFC 3849 documentation
+        "64:ff9b:1::/48",    # RFC 8215 local-use IPv4/IPv6 translation
+    )
+)
+
 
 def _ip_is_disallowed(ip) -> bool:
     """Return True if `ip` is not a public, routable address.
 
-    Blocks private, loopback, link-local (incl. 169.254.169.254 cloud
-    metadata), reserved, multicast, and unspecified addresses. IPv4-mapped
-    IPv6 addresses (e.g. ::ffff:127.0.0.1) are unwrapped first so they can't
-    be used to smuggle a private IPv4 target past the check.
+    The primary test is positive — an address must be `is_global` — so ranges
+    that are simply not public (shared address space, benchmarking, TEST-NETs)
+    are rejected without having to be enumerated. The category checks and the
+    explicit network list are kept alongside it as belt and braces.
+
+    IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) are unwrapped first so
+    they cannot smuggle a non-public IPv4 target past the check.
     """
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
         ip = mapped
-    return (
-        not ip.is_global
-        or ip.is_private
+    if (
+        ip.is_private
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_reserved
         or ip.is_multicast
         or ip.is_unspecified
-    )
+    ):
+        return True
+    if not ip.is_global:
+        return True
+    return any(ip in network for network in _BLOCKED_NETWORKS)
 
 
 def validate_public_url(url: str, resolve: bool = True) -> None:
@@ -248,8 +344,9 @@ def validate_public_url(url: str, resolve: bool = True) -> None:
         if _ip_is_disallowed(ip):
             raise BlockedURLError(
                 f"Refusing to fetch '{host}': it resolves to a non-public address "
-                f"({ip}). Private, loopback, link-local, and cloud-metadata "
-                "addresses are blocked to prevent server-side request forgery."
+                f"({ip}). Private, loopback, link-local, shared (CGNAT), reserved "
+                "and cloud-metadata addresses are blocked to prevent server-side "
+                "request forgery."
             )
 
 
@@ -303,28 +400,3 @@ async def try_multiple_download_methods(url: str) -> Optional[bytes]:
     validate_public_url(url, resolve=False)
     return await download_image(url)
 
-
-def create_resource_from_image(image_bytes: bytes, resource_id: str, name: str) -> Dict[str, Any]:
-    """
-    Create a resource entry from image bytes.
-    
-    Args:
-        image_bytes: Raw image data
-        resource_id: Unique identifier for the resource
-        name: Human-readable name for the resource
-        
-    Returns:
-        Dictionary with resource information
-    """
-    ad_creative_images[resource_id] = {
-        "data": image_bytes,
-        "mime_type": "image/jpeg",
-        "name": name
-    }
-    
-    return {
-        "resource_id": resource_id,
-        "resource_uri": f"meta-ads://images/{resource_id}",
-        "name": name,
-        "size": len(image_bytes)
-    }
