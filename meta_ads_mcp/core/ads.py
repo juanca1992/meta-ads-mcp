@@ -211,6 +211,36 @@ def _strip_deprecated_standard_enhancements(creative: Dict[str, Any]) -> None:
             dof_cfs.pop("standard_enhancements", None)
 
 
+def _normalize_page_welcome_message(value: Optional[Union[str, Dict[str, Any]]]) -> Optional[str]:
+    """Return page_welcome_message in the VISUAL_EDITOR JSON format Meta expects.
+
+    Meta accepts a plain-text page_welcome_message when the creative is created,
+    but every ad later created with that creative fails with code 2 ("An
+    unexpected error has occurred", is_transient=true) on CTWA ad sets. Ads
+    Manager always sends the VISUAL_EDITOR JSON, so plain text is wrapped into
+    the minimal shape that Meta accepts for ad creation.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return json.dumps(value)
+    try:
+        if isinstance(json.loads(value), dict):
+            return value
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return json.dumps({
+        "type": "VISUAL_EDITOR",
+        "version": 2,
+        "landing_screen_type": "welcome_message",
+        "media_type": "text",
+        "text_format": {
+            "customer_action_type": "autofill_message",
+            "message": {"autofill_message": {"content": value}, "text": value},
+        },
+    })
+
+
 def _translate_video_customization_rules(
     rules: List[Dict[str, Any]],
     videos_array: List[Dict[str, Any]],
@@ -641,6 +671,22 @@ async def create_ad(
     
     try:
         data = await make_api_request(endpoint, access_token, params, method="POST")
+
+        error_obj = data.get("error") if isinstance(data, dict) else None
+        if isinstance(error_obj, dict):
+            details = error_obj.get("details", {})
+            inner_error = details.get("error", {}) if isinstance(details, dict) else {}
+            error_subcode = inner_error.get("error_subcode") if isinstance(inner_error, dict) else None
+            if error_subcode == 3858114:
+                data["hint"] = (
+                    "The creative inherits a catalog that is not owned by a Business "
+                    "Manager (typically a WhatsApp/Page catalog pulled in by Advantage+ "
+                    "or product-browsing settings of a creative made in Ads Manager). "
+                    "Reusing this creative will keep failing. Either move the catalog "
+                    "to the Business Manager in Commerce Manager, or build a new "
+                    "creative with create_ad_creative(disable_all_enhancements=True)."
+                )
+
         return json.dumps(data, indent=2)
     except Exception as e:
         error_msg = str(e)
@@ -1845,7 +1891,7 @@ async def create_ad_creative(
     images: Optional[List[Dict[str, Any]]] = None,
     facebook_branded_content: Optional[Dict[str, Any]] = None,
     instagram_branded_content: Optional[Dict[str, Any]] = None,
-    page_welcome_message: Optional[str] = None,
+    page_welcome_message: Optional[Union[str, Dict[str, Any]]] = None,
     marketing_message_structured_spec: Optional[Dict[str, Any]] = None,
     destination_spec: Optional[Dict[str, Any]] = None,
     wamo_whatsapp_identity_spec: Optional[Dict[str, Any]] = None,
@@ -2095,6 +2141,11 @@ async def create_ad_creative(
                       Format: {"sponsor_id": "<instagram_user_id>"} where sponsor_id is the
                       Instagram account ID of the sponsoring brand. Passed as a top-level
                       field on the ad creative.
+        page_welcome_message: Welcome/pre-filled message for click-to-WhatsApp and
+                      Messenger creatives. Pass plain text (it is wrapped into Meta's
+                      VISUAL_EDITOR JSON) or the full VISUAL_EDITOR JSON (string or dict),
+                      as returned by get_creative_details. Plain text sent raw makes Meta
+                      fail ad creation with a misleading "transient" code 2 error.
 
     Returns:
         JSON response with created creative details
@@ -3049,7 +3100,7 @@ async def create_ad_creative(
 
         # Current messaging and lead-destination properties from Graph API v26.
         current_messaging_fields = {
-            "page_welcome_message": page_welcome_message,
+            "page_welcome_message": _normalize_page_welcome_message(page_welcome_message),
             "marketing_message_structured_spec": marketing_message_structured_spec,
             "destination_spec": destination_spec,
             "wamo_whatsapp_identity_spec": wamo_whatsapp_identity_spec,
